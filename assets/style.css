@@ -1,1 +1,211 @@
+/* ============================================================
+   GLOBAL VARIABLES
+============================================================ */
+:root {
+    --bg-dark: #020c08;
+    --bg-card: rgba(10, 25, 15, 0.55);
+    --bg-card-strong: rgba(10, 25, 15, 0.85);
+
+    --green-neon: #39ff9f;
+    --green-mid: #00b46f;
+    --green-soft: #86ffcf;
+
+    --text-light: #e8fff2;
+    --text-mid: #b3ffdd;
+
+    --border-glow: 0 0 12px rgba(57, 255, 159, 0.45);
+    --shadow-card: 0 0 20px rgba(0, 255, 138, 0.15);
+
+    --radius: 18px;
+    --transition: 0.25s ease-in-out;
+}
+
+/* ============================================================
+   RESET / BASE
+============================================================ */
+html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: var(--bg-dark) !important;
+    font-family: "Segoe UI", Roboto, sans-serif;
+    color: var(--text-light);
+}
+
+h1, h2, h3, h4 {
+    color: var(--green-soft) !important;
+    letter-spacing: 0.6px;
+    text-shadow: 0 0 8px rgba(57, 255, 159, 0.25);
+}
+
+p, label, span, div {
+    color: var(--text-mid) !important;
+}
+
+/* ============================================================
+   STREAMLIT OVERRIDES
+============================================================ */
+.stApp {
+    background: var(--bg-dark) !important;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+    background: rgba(5, 20, 10, 0.9) !important;
+    backdrop-filter: blur(12px);
+    border-right: 1px solid rgba(57, 255, 159, 0.15);
+    box-shadow: 4px 0 20px rgba(0, 255, 138, 0.08);
+}
+
+section[data-testid="stSidebar"] h1, 
+section[data-testid="stSidebar"] h2, 
+section[data-testid="stSidebar"] h3 {
+    color: var(--green-soft) !important;
+}
+
+/* Sidebar buttons */
+.stButton>button {
+    background: var(--green-mid) !important;
+    color: black !important;
+    font-weight: 600;
+    border-radius: var(--radius);
+    border: none;
+    box-shadow: var(--border-glow);
+    transition: var(--transition);
+}
+
+.stButton>button:hover {
+    background: var(--green-neon) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 0 18px rgba(57, 255, 159, 0.8);
+}
+
+/* ============================================================
+   CARDS / CONTAINERS
+============================================================ */
+.im-card, .stContainer, .stMarkdown {
+    background: var(--bg-card) !important;
+    padding: 18px 22px !important;
+    border-radius: var(--radius);
+    border: 1px solid rgba(57, 255, 159, 0.2);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(40px) saturate(120%);
+}
+
+/* General input styling */
+input, textarea, select {
+    background: rgba(5, 20, 10, 0.5) !important;
+    border: 1px solid rgba(57, 255, 159, 0.25) !important;
+    border-radius: var(--radius) !important;
+    color: var(--text-light) !important;
+}
+
+input:focus, textarea:focus, select:focus {
+    border-color: var(--green-neon) !important;
+    box-shadow: var(--border-glow);
+}
+
+/* Metric outputs */
+.stSuccess, .stAlert {
+    border-left: 4px solid var(--green-neon) !important;
+    background: rgba(0, 255, 138, 0.08) !important;
+    color: var(--green-soft) !important;
+}
+
+/* ============================================================
+   GLOW SEPARATORS
+============================================================ */
+hr {
+    border: none;
+    height: 1px;
+    background: linear-gradient(
+        90deg,
+        rgba(57, 255, 159, 0) 0%,
+        rgba(57, 255, 159, 0.6) 50%,
+        rgba(57, 255, 159, 0) 100%
+    );
+    margin: 25px 0;
+}
+
+/* ============================================================
+   CUSTOM UTILITY CLASSES
+============================================================ */
+.green-glow {
+    text-shadow: 0 0 12px var(--green-neon);
+    color: var(--green-neon) !important;
+    font-weight: 700;
+}
+
+.card {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 20px;
+    border: 1px solid rgba(57, 255, 159, 0.25);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(14px);
+}
+
+.glass-box {
+    border-radius: var(--radius);
+    background: rgba(10, 25, 15, 0.45);
+    border: 1px solid rgba(57, 255, 159, 0.25);
+    padding: 25px;
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(30px);
+}
+
+/* ============================================================
+   EXPANDERS
+============================================================ */
+.streamlit-expanderHeader {
+    background: rgba(10, 30, 15, 0.6) !important;
+    color: var(--green-soft) !important;
+    border-radius: var(--radius) !important;
+}
+
+/* ============================================================
+   TABLES
+============================================================ */
+tbody, thead, tr, th, td {
+    color: var(--text-light) !important;
+    background: rgba(10, 30, 15, 0.25) !important;
+    border-color: rgba(57, 255, 159, 0.2) !important;
+}
+
+/* ============================================================
+   SUCCESS, WARNING, INFO TEXT
+============================================================ */
+.stSuccess, .stWarning, .stInfo, .stError {
+    padding: 12px 18px !important;
+    border-radius: var(--radius) !important;
+    border-left: 4px solid var(--green-neon) !important;
+}
+
+/* ============================================================
+   BUTTONS (global)
+============================================================ */
+button[kind="primary"], .stDownloadButton button {
+    background: var(--green-mid) !important;
+    color: black !important;
+    border-radius: var(--radius) !important;
+    border: none !important;
+    box-shadow: var(--border-glow) !important;
+    transition: var(--transition);
+    font-weight: 600 !important;
+}
+
+button[kind="primary"]:hover,
+.stDownloadButton button:hover {
+    background: var(--green-neon) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 0 20px rgba(57, 255, 159, 0.7) !important;
+}
+
+/* ============================================================
+   FOOTER HIDE
+============================================================ */
+footer { visibility: hidden !important; }
+
+/* ============================================================
+   END OF FILE
+============================================================ */
 
