@@ -1,5 +1,10 @@
 import streamlit as st
 from utils.load_css import load_css
+from utils.load_css import load_css
+
+st.set_page_config(page_title="Carbon Registry", page_icon="🌍", layout="wide")
+load_css()
+
 
 st.set_page_config(
     page_title="Carbon Registry",
