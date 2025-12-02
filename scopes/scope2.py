@@ -1,75 +1,60 @@
 # scopes/scope2.py
 import streamlit as st
+from datetime import date
+
+from registry.database import SessionLocal
+from registry.crud import list_projects, add_emission
+
 from .scope_utils import (
     SCOPE2_EF,
     parse_ef,
     compute_emissions,
     show_results_table,
-    save_scope_record,
 )
 
 
 def calc_scope2():
-    st.subheader("Scope 2 – Indirect Emissions from Purchased Electricity, Heat & Steam")
 
-    st.markdown(
-        """
-        Scope 2 emissions are **indirect** GHG emissions from the generation of purchased energy.
-        This module calculates emissions from:
-        - Grid electricity
-        - Renewable electricity (market-based factors)
-        - Other purchased energy carriers
-        """,
-        unsafe_allow_html=False,
-    )
+    st.header("Scope 2 – Purchased Electricity")
 
-    source = st.selectbox("Energy source:", list(SCOPE2_EF.keys()))
+    with SessionLocal() as session:
+        projects = list_projects(session)
+
+    if not projects:
+        st.warning("Create a project before saving emissions.")
+        save_enabled = False
+        project_id = None
+    else:
+        project_map = {f"{p.id}: {p.name}": p.id for p in projects}
+        selected_label = st.selectbox("Save to project:", list(project_map.keys()))
+        project_id = project_map[selected_label]
+        save_enabled = True
+
+    source = st.selectbox("Energy Source:", list(SCOPE2_EF.keys()))
 
     col1, col2 = st.columns(2)
     with col1:
-        baseline_kwh = st.number_input(
-            "Baseline consumption (kWh per year):", min_value=0.0, step=0.01
-        )
+        baseline_kwh = st.number_input("Baseline (kWh/year):", min_value=0.0)
     with col2:
-        project_kwh = st.number_input(
-            "Project consumption (kWh per year):", min_value=0.0, step=0.01
-        )
-
-    st.caption(
-        "Tip: You can model a fuel switch or on-site renewables by changing the energy mix "
-        "or using different emission factors for baseline vs project in the methodologies module."
-    )
+        project_kwh = st.number_input("Project (kWh/year):", min_value=0.0)
 
     ef_choice = st.selectbox(
-        "Emission factor (kg CO₂e per kWh):",
-        [f"Default – {SCOPE2_EF[source]}"] + ["Custom"],
+        "EF (kg CO₂e per kWh):",
+        [f"Default – {SCOPE2_EF[source]}"] + ["Custom"]
     )
 
     custom_ef = None
     if ef_choice == "Custom":
-        custom_ef = st.number_input(
-            "Custom emission factor (kg CO₂e per kWh):",
-            min_value=0.0,
-            step=0.0001,
-        )
+        custom_ef = st.number_input("Custom EF:", min_value=0.0)
 
-    if st.button("Calculate Scope 2 emissions"):
+    if st.button("Calculate Scope 2 Emissions"):
         if baseline_kwh <= 0:
-            st.error("Baseline consumption must be greater than zero.")
+            st.error("Baseline must be >0.")
             return
-        if project_kwh < 0:
-            st.error("Project consumption cannot be negative.")
-            return
-        if project_kwh > baseline_kwh:
-            st.warning(
-                "⚠️ Project consumption is higher than baseline. "
-                "This indicates an increase rather than a reduction."
-            )
 
         ef = parse_ef(source, SCOPE2_EF, custom_ef)
-
         if ef is None or ef <= 0:
-            st.error("Valid emission factor is required.")
+            st.error("Invalid EF.")
             return
 
         baseline_t, project_t, reduction_t, reduction_pct = compute_emissions(
@@ -78,15 +63,36 @@ def calc_scope2():
 
         show_results_table(baseline_t, project_t, reduction_t, reduction_pct)
 
-        save_scope_record(
-            scope="Scope 2",
-            category=source,
-            method="activity-based",
-            baseline_activity=baseline_kwh,
-            project_activity=project_kwh,
-            ef=ef,
-            baseline_t=baseline_t,
-            project_t=project_t,
-            reduction_t=reduction_t,
+        st.session_state["scope2_results"] = {
+            "category": source,
+            "baseline_t": baseline_t,
+            "project_t": project_t,
+            "reduction_t": reduction_t,
+        }
+
+    if save_enabled and "scope2_results" in st.session_state:
+        results = st.session_state["scope2_results"]
+
+        st.markdown("### 💾 Save to Registry")
+
+        opt = st.selectbox(
+            "Save which value?",
+            [
+                f"Project Emissions: {results['project_t']:.3f} tCO₂e",
+                f"Emission Reduction: {results['reduction_t']:.3f} tCO₂e",
+            ]
         )
 
+        qty = float(opt.split(":")[1].replace("tCO₂e",""))
+
+        if st.button("Save Emission"):
+            with SessionLocal() as session:
+                add_emission(
+                    session,
+                    project_id=project_id,
+                    date=date.today(),
+                    quantity_tCO2e=qty,
+                    activity_type=f"Scope 2 – {results['category']}",
+                    notes="Saved via Scope 2 Calculator",
+                )
+            st.success("Saved to Carbon Registry.")
