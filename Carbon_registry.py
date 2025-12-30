@@ -14,7 +14,7 @@ NAV_ITEMS = [
         "card_title": "⚖️ Carbon Registry",
         "desc": "Create projects, record activities, and track carbon reductions.",
         "button": "Open Carbon Registry",
-        "page": "pages/1_Registry.py",
+        "page": "1_Registry.py",
         "badge": "Core",
     },
     {
@@ -22,7 +22,7 @@ NAV_ITEMS = [
         "card_title": "📊 Scope 1 / 2 / 3 Calculator",
         "desc": "Compute emissions baseline or project values across all scopes.",
         "button": "Open Scope Calculator",
-        "page": "pages/2_Scope_Calculator.py",
+        "page": "2_Scope_Calculator.py",
         "badge": "Core",
     },
     {
@@ -30,7 +30,7 @@ NAV_ITEMS = [
         "card_title": "📘 Methodology Tools",
         "desc": "VERA-aligned calculators (VM0038, VMR0007, EV, hydrogen).",
         "button": "Open Methodology Calculators",
-        "page": "pages/3_Methodologies.py",
+        "page": "3_Methodologies.py",
         "badge": "Beta",
     },
 ]
