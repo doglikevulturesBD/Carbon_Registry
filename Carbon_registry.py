@@ -74,15 +74,15 @@ with st.sidebar:
 st.markdown(
     f"""
     <div style='padding: 30px;'>
-        <h1 style='color:#86ffcf; text-shadow:0 0 10px #39ff9f;'>
-            🌱 Carbon Registry & MRV Platform
-        </h1>
+    <h1 style='color:#86ffcf; text-shadow:0 0 10px #39ff9f;'>
+    🌱 Carbon Registry & MRV Platform
+    </h1>
 
-        <p style='font-size:18px; color:#b3ffdd;'>
-        A unified space for carbon accounting, MRV, methodologies and scope calculators.
-        <br/>
-        <span style='opacity:0.85;'>Version: {APP_VERSION}</span>
-        </p>
+    <p style='font-size:18px; color:#b3ffdd;'>
+    A unified space for carbon accounting, MRV, methodologies and scope calculators.
+    <br/>
+    <span style='opacity:0.85;'>Version: {APP_VERSION}</span>
+    </p>
     </div>
     """,
     unsafe_allow_html=True,
