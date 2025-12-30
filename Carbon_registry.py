@@ -14,7 +14,7 @@ NAV_ITEMS = [
         "card_title": "⚖️ Carbon Registry",
         "desc": "Create projects, record activities, and track carbon reductions.",
         "button": "Open Carbon Registry",
-        "page": "1_Registry.py",
+        "page": "pages/1_Registry.py",
         "badge": "Core",
     },
     {
