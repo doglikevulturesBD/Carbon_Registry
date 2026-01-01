@@ -1,299 +1,400 @@
-# pages/3_Methodologies.py
+# pages/3_📘_Methodologies.py
 # ------------------------------------------------------------
-# Carbon Registry • Methodology Demos (single-file launcher)
-# VM0038 (EV charging) • AM0124 (Hydrogen electrolysis) • VMR0007 (Waste recycling)
+# Carbon Registry • Methodology Calculators (Single-file, launch-ready)
 #
-# Goal: "launch-proof" demo without import/package issues.
-# Later you can split back into methodologies/ modules.
+# Fixes "Module could not be loaded" by:
+# - Removing imports like: from methodologies.vm0038_ev import vm0038_ev
+# - Removing dependency on registry.database / SessionLocal / registry.crud
+# - Using the same SQLite DB (data/carbon_registry.db) used by your registry/scope pages
+#
+# Contains 3 MVP demos:
+# - VM0038 (EV charging)  [demo-style, not official EF values]
+# - AM0124 (Hydrogen electrolysis) [demo-style applicability + ER]
+# - VMR0007 (Solid waste recovery & recycling) [demo-style ER]
 # ------------------------------------------------------------
 
 import streamlit as st
-from datetime import date
+import sqlite3
+import json
+import uuid
+from pathlib import Path
+from datetime import datetime, date
+from typing import Tuple, Optional, Dict, Any
+
 import pandas as pd
 import numpy as np
-
-# Altair is optional. If you don't have it installed, set USE_ALTAIR = False.
-USE_ALTAIR = True
-try:
-    import altair as alt
-except Exception:
-    USE_ALTAIR = False
+import altair as alt
 
 
-# ============================================================
-# Shared utilities
-# ============================================================
+# ------------------------------------------------------------
+# DB (SQLite) — Cloud-safe
+# ------------------------------------------------------------
+DB_PATH = Path("data/carbon_registry.db")
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-def save_to_registry_csv(result: dict, path: str = "registry_data.csv"):
-    """Very lightweight demo 'registry' save into a local CSV file."""
-    try:
-        df = pd.read_csv(path)
-    except Exception:
-        df = pd.DataFrame(columns=list(result.keys()))
+@st.cache_resource
+def get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
 
-    # ensure columns include all keys
-    for k in result.keys():
-        if k not in df.columns:
-            df[k] = None
+def db_exec(query: str, params: Tuple = ()) -> None:
+    conn = get_conn()
+    conn.execute(query, params)
+    conn.commit()
 
-    df = pd.concat([df, pd.DataFrame([result])], ignore_index=True)
-    df.to_csv(path, index=False)
-    return path
+def db_query(query: str, params: Tuple = ()) -> pd.DataFrame:
+    conn = get_conn()
+    rows = conn.execute(query, params).fetchall()
+    return pd.DataFrame([dict(r) for r in rows])
+
+def now_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+def ensure_schema() -> None:
+    # projects table should already exist from Registry page, but we guard anyway
+    db_exec("""
+    CREATE TABLE IF NOT EXISTS projects (
+        project_id TEXT PRIMARY KEY,
+        project_code TEXT,
+        project_name TEXT,
+        status TEXT DEFAULT 'active',
+        updated_at TEXT
+    );
+    """)
+
+    # A simple emissions ledger for methodology saves
+    db_exec("""
+    CREATE TABLE IF NOT EXISTS emissions (
+        emission_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        methodology TEXT NOT NULL,
+        record_date TEXT NOT NULL,
+        quantity_tco2e REAL NOT NULL,
+        notes TEXT,
+        inputs_json TEXT,
+        outputs_json TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(project_id)
+    );
+    """)
+
+ensure_schema()
+
+def list_projects() -> pd.DataFrame:
+    df = db_query("""
+        SELECT project_id, project_code, project_name, status
+        FROM projects
+        ORDER BY updated_at DESC
+    """)
+    if df.empty:
+        return df
+    df["project_code"] = df["project_code"].fillna("")
+    df["project_name"] = df["project_name"].fillna("")
+    df["label"] = df["project_code"] + " — " + df["project_name"]
+    df.loc[df["label"].str.strip() == "—", "label"] = df["project_id"]
+    return df
+
+def save_emission(
+    project_id: str,
+    methodology: str,
+    quantity_tco2e: float,
+    record_date: str,
+    notes: str,
+    inputs: Dict[str, Any],
+    outputs: Dict[str, Any],
+) -> str:
+    emission_id = str(uuid.uuid4())
+    db_exec(
+        """
+        INSERT INTO emissions (
+            emission_id, project_id, methodology, record_date,
+            quantity_tco2e, notes, inputs_json, outputs_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            emission_id,
+            project_id,
+            methodology,
+            record_date,
+            float(quantity_tco2e),
+            notes,
+            json.dumps(inputs, ensure_ascii=False),
+            json.dumps(outputs, ensure_ascii=False),
+            now_iso(),
+        )
+    )
+    return emission_id
 
 
-def section_note(text: str):
-    st.caption(text)
+# ------------------------------------------------------------
+# Shared: Save panel for methodology results
+# ------------------------------------------------------------
+def render_save_panel(
+    *,
+    methodology: str,
+    total_tco2e: float,
+    inputs: Dict[str, Any],
+    outputs: Dict[str, Any],
+    notes_default: str = "",
+):
+    st.divider()
+    with st.expander("💾 Save result to Carbon Registry (optional)", expanded=False):
+        projs = list_projects()
+        if projs.empty:
+            st.error("No projects found. Create a project on the Registry page first.")
+            return
 
+        active_pid = st.session_state.get("active_project_id")
+        options = projs["project_id"].tolist()
+        default_idx = options.index(active_pid) if active_pid in options else 0
 
-# ============================================================
-# VM0038 – EV Charging (demo)
-# ============================================================
-
-def vm0038_ev_demo():
-    st.header("⚡ VM0038 – EV Charging System (Demo)")
-    st.caption("Baseline: ICE fuel | Project: EV charging electricity (grid/renewable). Demo math only.")
-
-    # Default emission factors (kg CO2e / litre) — demo placeholders
-    FUEL_EF = {"Petrol": 2.31, "Diesel": 2.68, "LPG": 1.51, "Other": None}
-    WTT_EF = {"Petrol": 0.52, "Diesel": 0.58, "LPG": 0.21}  # upstream WTT
-    FUEL_ENERGY_MJ = {"Petrol": 34.2, "Diesel": 38.6, "LPG": 26.8, "Other": 0.0}
-    RENEWABLE_EF = 0.0  # demo assumption
-
-    with st.expander("📘 Methodology overview (VM0038-style)", expanded=False):
-        st.markdown(
-            r"""
-- **Baseline emissions (BEy)**: fuel avoided  
-  \( BE_y = FC_{fuel,y} \times (EF_{fuel} + EF_{WTT}) \)
-
-- **Project emissions (PEy)**: charging electricity  
-  \( PE_y = E_{EV,y} \times EF_{grid,y} \times (1 - r_{renew}) \)
-
-- **Net reduction**: \( ER_y = BE_y - PE_y \)
-
-This is a **demo implementation** for education and discussion (not an official Verra calculator).
-"""
+        pid = st.selectbox(
+            "Select project",
+            options=options,
+            index=default_idx,
+            format_func=lambda x: projs.loc[projs.project_id == x, "label"].values[0],
+            key=f"{methodology}_save_pid",
         )
 
-    st.subheader("1) Baseline – Fuel avoided")
+        c1, c2 = st.columns(2)
+        with c1:
+            rec_date = st.date_input("Record date", value=date.today(), key=f"{methodology}_date").isoformat()
+        with c2:
+            qty = st.number_input(
+                "Quantity (tCO₂e)",
+                value=float(total_tco2e),
+                step=0.001,
+                key=f"{methodology}_qty",
+            )
+
+        notes = st.text_area("Notes (optional)", value=notes_default, height=100, key=f"{methodology}_notes")
+
+        if st.button("✅ Save to emissions ledger", use_container_width=True, key=f"{methodology}_save_btn"):
+            eid = save_emission(
+                project_id=pid,
+                methodology=methodology,
+                quantity_tco2e=qty,
+                record_date=rec_date,
+                notes=notes,
+                inputs=inputs,
+                outputs=outputs,
+            )
+            st.success(f"Saved ✅ emission_id = {eid}")
+
+
+# ============================================================
+# 1) VM0038 – EV Charging (demo-style)
+# ============================================================
+FUEL_EF = {"Petrol": 2.31, "Diesel": 2.68, "LPG": 1.51, "Other": None}              # kg CO2e/L (demo defaults)
+WTT_EF  = {"Petrol": 0.52, "Diesel": 0.58, "LPG": 0.21}                             # kg CO2e/L (demo defaults)
+FUEL_ENERGY_MJ = {"Petrol": 34.2, "Diesel": 38.6, "LPG": 26.8, "Other": 0.0}        # MJ/L
+RENEWABLE_EF = 0.0                                                                  # kg CO2e/kWh (assumed)
+
+def vm0038_ev():
+    st.subheader("⚡ VM0038 (demo-style) — EV Charging")
+
+    with st.expander("📘 Overview", expanded=False):
+        st.markdown(
+            """
+This is a **VM0038-style demonstration**:
+- Baseline: ICE fuel avoided (litres/year) × (EF + optional WTT)
+- Project: EV charging electricity (kWh/year) × grid EF, adjusted for renewable fraction and charging efficiency
+- Optional grid decarbonisation over time
+Outputs are **screening/demo** unless you align inputs, boundaries, and factors to the official methodology.
+            """
+        )
+
+    st.markdown("### 1) Baseline — Fuel avoided")
     c1, c2 = st.columns(2)
     with c1:
-        fuel_type = st.selectbox("Fuel type", list(FUEL_EF.keys()), key="vm0038_fuel")
-        fuel_use_l = st.number_input("Fuel avoided (litres/year)", min_value=0.0, step=0.01, value=10000.0, key="vm0038_l")
+        fuel_type = st.selectbox("Fuel type", list(FUEL_EF.keys()), key="vm0038_fuel_type")
+        fuel_use_l = st.number_input("Fuel avoided (litres/year)", min_value=0.0, step=0.01, key="vm0038_fuel_l")
     with c2:
-        default_fuel_ef = FUEL_EF[fuel_type] if FUEL_EF[fuel_type] is not None else 0.0
-        ef_fuel = st.number_input("Fuel EF (kg CO₂e/litre)", value=float(default_fuel_ef), min_value=0.0, step=0.0001, key="vm0038_ef")
-        include_wtt = st.checkbox("Include WTT (upstream)", value=True, key="vm0038_wtt")
+        default_ef = float(FUEL_EF[fuel_type]) if FUEL_EF[fuel_type] is not None else 0.0
+        ef_fuel = st.number_input("Fuel EF (kg CO₂e/litre)", min_value=0.0, value=default_ef, step=0.0001, key="vm0038_ef_fuel")
+        include_wtt = st.checkbox("Include WTT (upstream) EF", value=True, key="vm0038_include_wtt")
 
-    wtt_ef = WTT_EF.get(fuel_type, 0.0) if include_wtt else 0.0
-    BEy_kg = fuel_use_l * (ef_fuel + wtt_ef)
-
-    # Energy equivalence (diagnostic)
-    energy_mj_year = fuel_use_l * FUEL_ENERGY_MJ.get(fuel_type, 0.0)
+    wtt = float(WTT_EF.get(fuel_type, 0.0)) if include_wtt else 0.0
+    energy_mj_year = fuel_use_l * float(FUEL_ENERGY_MJ.get(fuel_type, 0.0))
     st.info(f"Fuel energy equivalent (diagnostic): **{energy_mj_year:,.1f} MJ/year**")
 
-    baseline_uncert_pct = st.slider("Baseline uncertainty (%)", 0.0, 20.0, 5.0, step=0.5, key="vm0038_u_b")
+    baseline_uncert_pct = st.slider("Baseline uncertainty (%)", 0.0, 20.0, 5.0, 0.5, key="vm0038_u_base")
 
-    st.write(f"**Baseline emissions (BEy): {BEy_kg:,.2f} kg CO₂e/year**")
+    BEy_kg = fuel_use_l * (ef_fuel + wtt)
+    st.write(f"**BEy:** {BEy_kg:,.2f} kg CO₂e/year")
 
-    st.divider()
-    st.subheader("2) Project – EV charging electricity")
-
+    st.markdown("### 2) Project — Electricity for EV charging")
     mode = st.radio(
-        "Define project electricity use:",
+        "Electricity definition",
         ["Direct annual kWh", "From charger fleet parameters"],
         horizontal=True,
         key="vm0038_mode",
     )
 
     if mode == "Direct annual kWh":
-        c1, c2 = st.columns(2)
-        with c1:
-            kwh_year = st.number_input("EV charging electricity (kWh/year)", min_value=0.0, step=0.01, value=250000.0, key="vm0038_kwh")
-        with c2:
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            kwh_year = st.number_input("EV charging electricity (kWh/year)", min_value=0.0, step=0.01, key="vm0038_kwh_year")
+        with cc2:
             charge_eff = st.slider("Charging efficiency (%)", 70, 100, 90, key="vm0038_eff")
     else:
-        st.markdown("**Charger fleet parameters**")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            n_chargers = st.number_input("Number of chargers", min_value=1, value=4, step=1, key="vm0038_n")
-        with c2:
-            sessions_per_day = st.number_input("Sessions/charger/day", min_value=0.0, value=4.0, step=0.5, key="vm0038_sess")
-        with c3:
-            kwh_per_session = st.number_input("kWh/session", min_value=0.0, value=20.0, step=0.5, key="vm0038_kwhps")
-        with c4:
+        st.markdown("**Charger fleet**")
+        a1, a2, a3, a4 = st.columns(4)
+        with a1:
+            n_chargers = st.number_input("Chargers", min_value=1, value=4, step=1, key="vm0038_n")
+        with a2:
+            sessions_per_day = st.number_input("Sessions/charger/day", min_value=0.0, value=4.0, step=0.5, key="vm0038_spd")
+        with a3:
+            kwh_per_session = st.number_input("kWh/session", min_value=0.0, value=20.0, step=0.5, key="vm0038_kps")
+        with a4:
             operating_days = st.number_input("Operating days/year", min_value=0, value=300, step=1, key="vm0038_days")
 
-        kwh_year = n_chargers * sessions_per_day * kwh_per_session * operating_days
-        st.info(f"Derived annual charging electricity: **{kwh_year:,.1f} kWh/year**")
+        kwh_year = float(n_chargers) * sessions_per_day * kwh_per_session * float(operating_days)
+        st.info(f"Derived annual electricity: **{kwh_year:,.1f} kWh/year**")
         charge_eff = st.slider("Charging efficiency (%)", 70, 100, 90, key="vm0038_eff2")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        ef_grid = st.number_input("Grid EF (kg CO₂e/kWh)", min_value=0.0, value=0.9, step=0.0001, key="vm0038_grid")
-    with c2:
-        renewable_fraction = st.slider("Renewable fraction (%)", 0, 100, 0, step=5, key="vm0038_ren")
+    g1, g2 = st.columns(2)
+    with g1:
+        ef_grid = st.number_input("Grid EF (kg CO₂e/kWh)", min_value=0.0, value=0.9, step=0.0001, key="vm0038_ef_grid")
+    with g2:
+        renewable_fraction = st.slider("Renewable fraction (%)", 0, 100, 0, 5, key="vm0038_ren_frac")
 
-    project_uncert_pct = st.slider("Project uncertainty (%)", 0.0, 20.0, 5.0, step=0.5, key="vm0038_u_p")
+    project_uncert_pct = st.slider("Project uncertainty (%)", 0.0, 20.0, 5.0, 0.5, key="vm0038_u_proj")
 
     eff_grid_ef = ef_grid * (1 - renewable_fraction / 100.0) + RENEWABLE_EF * (renewable_fraction / 100.0)
-    useful_kwh = kwh_year * (charge_eff / 100.0)
+    useful_kwh = kwh_year * (charge_eff / 100.0)   # keeping your prior logic unchanged
     PEy_kg = useful_kwh * eff_grid_ef
+    st.write(f"**PEy (year 1):** {PEy_kg:,.2f} kg CO₂e/year")
 
-    st.write(f"**Project emissions (PEy, year 1): {PEy_kg:,.2f} kg CO₂e/year**")
-
-    st.divider()
-    st.subheader("3) Duration & grid decarbonisation")
-
-    c1, c2 = st.columns(2)
-    with c1:
+    st.markdown("### 3) Duration & grid decarbonisation")
+    d1, d2 = st.columns(2)
+    with d1:
         years = st.number_input("Project duration (years)", min_value=1, value=10, step=1, key="vm0038_years")
-    with c2:
-        grid_decarb = st.slider("Annual grid EF reduction (%/year)", 0.0, 10.0, 2.0, step=0.5, key="vm0038_decarb")
+    with d2:
+        grid_decarb = st.slider("Annual grid EF reduction (%/yr)", 0.0, 10.0, 2.0, 0.5, key="vm0038_decarb")
 
     if BEy_kg <= 0 or kwh_year <= 0:
-        st.warning("Enter non-zero baseline fuel and project electricity data to compute reductions.")
+        st.warning("Enter non-zero baseline fuel and project electricity to compute reductions.")
         return
-
-    records = []
-    current_ef = eff_grid_ef
 
     u_b = baseline_uncert_pct / 100.0
     u_p = project_uncert_pct / 100.0
-    combined_u = (u_b**2 + u_p**2) ** 0.5
+    combined_u = float((u_b**2 + u_p**2) ** 0.5)
+
+    records = []
+    current_ef = float(eff_grid_ef)
 
     for y in range(1, int(years) + 1):
-        year_BEy_kg = BEy_kg  # constant baseline in this demo
         year_PEy_kg = useful_kwh * current_ef
+        year_BEy_kg = float(BEy_kg)
         year_ER_kg = year_BEy_kg - year_PEy_kg
 
         bey_unc_kg = year_BEy_kg * u_b
         pey_unc_kg = year_PEy_kg * u_p
         ery_unc_kg = abs(year_ER_kg) * combined_u
 
-        records.append(
-            {
-                "Year": y,
-                "BEy (t)": year_BEy_kg / 1000.0,
-                "PEy (t)": year_PEy_kg / 1000.0,
-                "Net Reduction (t)": year_ER_kg / 1000.0,
-                "Net Reduction ± (t)": ery_unc_kg / 1000.0,
-            }
-        )
+        records.append({
+            "Year": y,
+            "BEy (t)": year_BEy_kg / 1000.0,
+            "PEy (t)": year_PEy_kg / 1000.0,
+            "ER (t)": year_ER_kg / 1000.0,
+            "ER ± (t)": ery_unc_kg / 1000.0,
+        })
+
         current_ef *= (1 - grid_decarb / 100.0)
 
     df = pd.DataFrame(records)
-    total_reduction_t = float(df["Net Reduction (t)"].sum())
-    total_unc_t = float((df["Net Reduction ± (t)"] ** 2).sum() ** 0.5)
+    total_t = float(df["ER (t)"].sum())
+    total_unc_t = float((df["ER ± (t)"] ** 2).sum() ** 0.5)
 
-    st.markdown("### Annual results")
+    st.markdown("### Results")
     st.dataframe(df, use_container_width=True)
+    st.success(f"Total ER over {int(years)} years: **{total_t:,.3f} ± {total_unc_t:,.3f} tCO₂e**")
 
-    st.success(f"**Total reductions over {int(years)} years:** {total_reduction_t:,.3f} ± {total_unc_t:,.3f} t CO₂e")
+    chart_data = df.melt("Year", var_name="Series", value_name="tCO2e")
+    chart = alt.Chart(chart_data).mark_line(point=True).encode(
+        x="Year:O", y="tCO2e:Q", color="Series:N", tooltip=["Year", "Series", "tCO2e"]
+    )
+    st.altair_chart(chart, use_container_width=True)
 
-    if USE_ALTAIR:
-        st.markdown("### Chart")
-        chart_data = df.melt(id_vars="Year", var_name="Series", value_name="tCO2e")
-        chart = (
-            alt.Chart(chart_data)
-            .mark_line(point=True)
-            .encode(x="Year:O", y="tCO2e:Q", color="Series:N", tooltip=["Year", "Series", "tCO2e"])
-        )
-        st.altair_chart(chart, use_container_width=True)
-    else:
-        st.info("Altair not installed; chart disabled. (pip install altair)")
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    st.download_button("💾 Download CSV", data=csv_bytes, file_name="vm0038_demo_results.csv", mime="text/csv")
 
-    st.markdown("### Download CSV")
-    st.download_button(
-        "💾 Download VM0038 annual results (CSV)",
-        data=df.to_csv(index=False).encode("utf-8"),
-        file_name="vm0038_ev_annual_results.csv",
-        mime="text/csv",
+    inputs = {
+        "fuel_type": fuel_type,
+        "fuel_use_l": fuel_use_l,
+        "ef_fuel": ef_fuel,
+        "include_wtt": include_wtt,
+        "wtt_ef": wtt,
+        "baseline_uncert_pct": baseline_uncert_pct,
+        "mode": mode,
+        "kwh_year": kwh_year,
+        "charge_eff_pct": charge_eff,
+        "ef_grid": ef_grid,
+        "renewable_fraction_pct": renewable_fraction,
+        "project_uncert_pct": project_uncert_pct,
+        "years": int(years),
+        "grid_decarb_pct_per_year": grid_decarb,
+    }
+    outputs = {
+        "BEy_kg": BEy_kg,
+        "PEy_kg_year1": PEy_kg,
+        "total_ER_t": total_t,
+        "total_ER_unc_t": total_unc_t,
+        "annual_table": df.to_dict(orient="records"),
+    }
+
+    render_save_panel(
+        methodology="VM0038 (demo) – EV Charging",
+        total_tco2e=total_t,
+        inputs=inputs,
+        outputs=outputs,
+        notes_default=f"VM0038-style demo over {int(years)} years. Total ER {total_t:,.3f} ± {total_unc_t:,.3f} tCO2e.",
     )
 
-    st.divider()
-    st.subheader("4) Save summary to local demo registry (CSV)")
-
-    project_name = st.text_input("Project name", key="vm0038_pname")
-    operator = st.text_input("Operator", key="vm0038_op")
-    reporting_year = st.number_input("Reporting year", min_value=2020, value=date.today().year, step=1, key="vm0038_ry")
-
-    if st.button("💾 Save to demo registry CSV", key="vm0038_save"):
-        if not project_name.strip():
-            st.error("Project name is required.")
-        else:
-            path = save_to_registry_csv(
-                {
-                    "Project": project_name,
-                    "Operator": operator,
-                    "Year": int(reporting_year),
-                    "Methodology": "VM0038 – EV Charging (demo)",
-                    "Baseline Fuel (L/yr)": float(fuel_use_l),
-                    "Fuel Type": fuel_type,
-                    "BEy (tCO2e/yr)": float(BEy_kg / 1000.0),
-                    "Electricity (kWh/yr)": float(kwh_year),
-                    "Grid EF (kg/kWh)": float(ef_grid),
-                    "Renewable %": int(renewable_fraction),
-                    "PEy (tCO2e/yr, y1)": float(PEy_kg / 1000.0),
-                    "Years": int(years),
-                    "Total ER (tCO2e)": float(total_reduction_t),
-                    "Total ER ± (tCO2e)": float(total_unc_t),
-                }
-            )
-            st.success(f"Saved to {path} ✅")
-
 
 # ============================================================
-# AM0124 – Hydrogen electrolysis (demo)
+# 2) AM0124 – Hydrogen Electrolysis (demo-style)
 # ============================================================
+def am0124_hydrogen_app():
+    st.subheader("🟦 AM0124 (demo-style) — Hydrogen Electrolysis")
 
-def am0124_hydrogen_demo():
-    st.header("🟦 AM0124 – Hydrogen Electrolysis (Demo)")
-    st.caption("Educational demo aligned to a simplified AM0124-style structure.")
-
-    with st.expander("📘 Methodology overview (AM0124-style)", expanded=False):
+    with st.expander("📘 Overview", expanded=False):
         st.markdown(
-            r"""
-- Baseline emissions: \( BE_y = M_{H2} \times EF_{BL} \)
-- Project emissions: grid + fuel + transport + leakage proxy  
-- Net reductions: \( ER_y = BE_y - PE_y \)
-
-This is a **demo** calculator: you must replace defaults with cited factors for any real MRV use.
-"""
+            """
+Demo-style AM0124 structure:
+- Baseline EF depends on baseline tech (simple placeholder logic)
+- Project emissions include grid electricity, fossil fuel, transport, and leakage proxy
+- Applicability check: grid/captive ratio < 0.1 (as per your MVP rule)
+This is a **demonstration** and not a substitute for official methodology implementation.
+            """
         )
 
-    st.markdown("## 1️⃣ Inputs")
-    col1, col2 = st.columns(2)
+    c1, c2 = st.columns(2)
+    with c1:
+        MH2 = st.number_input("Hydrogen produced (t H₂/year)", min_value=0.0, value=1000.0, step=10.0, key="am0124_mh2")
+        baseline = st.selectbox("Baseline technology", ["Coal (gasification + SMR)", "Natural Gas (SMR)", "Oil (gasification + SMR)"], key="am0124_base")
+        grid_mwh = st.number_input("Grid electricity used (MWh/year)", min_value=0.0, value=500.0, key="am0124_grid")
+        captive_mwh = st.number_input("Captive renewable electricity (MWh/year)", min_value=0.0, value=9500.0, key="am0124_cap")
+        grid_ef = st.number_input("Grid EF (t CO₂/MWh)", min_value=0.0, value=1.3, key="am0124_grid_ef")
 
-    with col1:
-        MH2 = st.number_input("Hydrogen produced (t H₂ / year)", min_value=0.0, value=1000.0, step=10.0, key="am_mh2")
-        baseline = st.selectbox(
-            "Baseline technology",
-            ["Coal (gasification + SMR)", "Natural Gas (SMR)", "Oil (gasification + SMR)"],
-            key="am_base",
-        )
-        grid_mwh = st.number_input("Grid electricity used (MWh / year)", min_value=0.0, value=500.0, key="am_grid")
-        captive_mwh = st.number_input("Captive renewable electricity (MWh / year)", min_value=0.0, value=9500.0, key="am_cap")
-        grid_ef = st.number_input("Grid emission factor (t CO₂ / MWh)", min_value=0.0, value=1.3, key="am_grid_ef")
+    with c2:
+        fossil_gj = st.number_input("On-site fossil fuel use (GJ/year)", min_value=0.0, value=0.0, key="am0124_gj")
+        fossil_ef = st.number_input("Fuel EF (t CO₂/GJ)", min_value=0.0, value=0.0, key="am0124_fuel_ef")
+        transport_t = st.number_input("Transport emissions (t CO₂e/year)", min_value=0.0, value=0.0, key="am0124_tr")
+        leak_pct = st.number_input("Hydrogen leak rate (%)", min_value=0.0, value=5.0, key="am0124_leak")
+        gwp_h2 = st.number_input("GWP of H₂ (t CO₂e / t H₂)", min_value=0.0, value=5.8, key="am0124_gwp")
+        years = st.number_input("Project duration (years)", min_value=1, value=10, key="am0124_years")
 
-    with col2:
-        fossil_gj = st.number_input("On-site fossil fuel use (GJ / year)", min_value=0.0, value=0.0, key="am_fossil_gj")
-        fossil_ef = st.number_input("CO₂ factor of fuel (t CO₂ / GJ)", min_value=0.0, value=0.0, key="am_fossil_ef")
-        transport_t = st.number_input("Transport emissions (t CO₂e / year)", min_value=0.0, value=0.0, key="am_tr")
-        leak_pct = st.number_input("Hydrogen leak rate (%)", min_value=0.0, value=5.0, key="am_leak")
-        gwp_h2 = st.number_input("GWP of H₂ (t CO₂e / t H₂)", min_value=0.0, value=5.8, key="am_gwp")
-        years = st.number_input("Project duration (years)", min_value=1, value=10, key="am_years")
-
-    st.divider()
-
-    # Baseline EF (demo)
+    # Baseline EF (your MVP logic preserved)
     EF_BL = 19.0 if "Coal" in baseline else 9.0
 
-    # Applicability ratio check (demo rule from your code)
     ratio = (grid_mwh / captive_mwh) if captive_mwh > 0 else np.inf
     if ratio >= 0.1:
-        st.warning(f"⚠️ Demo compliance check: grid/captive ratio should be < 0.1. Current ratio = {ratio:.3f}")
+        st.warning(f"⚠️ Applicability check failed: grid/captive must be < 0.1. Current ratio = {ratio:.3f}")
 
-    # Calculations
     BEy = MH2 * EF_BL
     PE_ec = grid_mwh * grid_ef
     PE_fc = fossil_gj * fossil_ef if (fossil_gj > 0 and fossil_ef > 0) else 0.0
@@ -304,207 +405,186 @@ This is a **demo** calculator: you must replace defaults with cited factors for 
     ERy = BEy - PEy
     total_ER = ERy * years
 
-    st.markdown("## 2️⃣ Results")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Baseline EF", f"{EF_BL:.2f} tCO₂/tH₂")
-    c2.metric("BEy", f"{BEy:,.2f} tCO₂e/yr")
-    c3.metric("PEy", f"{PEy:,.2f} tCO₂e/yr")
-    c4.metric("ERy", f"{ERy:,.2f} tCO₂e/yr")
-    c5.metric("Total ER", f"{total_ER:,.2f} tCO₂e")
+    st.markdown("### Results")
+    cA, cB, cC, cD, cE = st.columns(5)
+    cA.metric("Baseline EF", f"{EF_BL:.2f} tCO₂/tH₂")
+    cB.metric("BEy", f"{BEy:,.2f} tCO₂e/yr")
+    cC.metric("PEy", f"{PEy:,.2f} tCO₂e/yr")
+    cD.metric("ERy", f"{ERy:,.2f} tCO₂e/yr")
+    cE.metric("Total ER", f"{total_ER:,.2f} tCO₂e")
 
-    st.markdown("### Breakdown of project emissions")
-    df = pd.DataFrame(
-        {
-            "Component": ["Grid electricity", "On-site fossil fuel", "Transport", "Hydrogen leaks"],
-            "Emissions (tCO₂e/yr)": [PE_ec, PE_fc, PE_tr, PE_leak],
-        }
-    )
+    st.markdown("### Project emissions breakdown")
+    df = pd.DataFrame({
+        "Component": ["Grid electricity", "On-site fossil fuel", "Transport", "Hydrogen leaks"],
+        "tCO2e/year": [PE_ec, PE_fc, PE_tr, PE_leak],
+    })
     st.dataframe(df, use_container_width=True)
 
-    st.divider()
-    st.markdown("## 3️⃣ Save summary to local demo registry (CSV)")
+    inputs = {
+        "MH2_t_per_year": MH2,
+        "baseline_tech": baseline,
+        "grid_mwh": grid_mwh,
+        "captive_mwh": captive_mwh,
+        "grid_ef_t_per_mwh": grid_ef,
+        "fossil_gj": fossil_gj,
+        "fossil_ef_t_per_gj": fossil_ef,
+        "transport_t": transport_t,
+        "leak_pct": leak_pct,
+        "gwp_h2": gwp_h2,
+        "years": int(years),
+        "grid_captive_ratio": float(ratio),
+    }
+    outputs = {
+        "EF_BL": EF_BL,
+        "BEy": float(BEy),
+        "PE_ec": float(PE_ec),
+        "PE_fc": float(PE_fc),
+        "PE_tr": float(PE_tr),
+        "PE_leak": float(PE_leak),
+        "PEy": float(PEy),
+        "ERy": float(ERy),
+        "total_ER": float(total_ER),
+    }
 
-    project_name = st.text_input("Project name", key="am_pname")
-    operator = st.text_input("Operator", key="am_op")
-    reporting_year = st.number_input("Reporting year", min_value=2020, value=date.today().year, step=1, key="am_ry")
-
-    if st.button("💾 Save to demo registry CSV", key="am_save"):
-        if not project_name.strip():
-            st.error("Project name is required.")
-        else:
-            path = save_to_registry_csv(
-                {
-                    "Project": project_name,
-                    "Operator": operator,
-                    "Year": int(reporting_year),
-                    "Methodology": "AM0124 – Hydrogen (demo)",
-                    "H2 (t/yr)": float(MH2),
-                    "Baseline Tech": baseline,
-                    "Baseline EF (tCO2/tH2)": float(EF_BL),
-                    "BEy (tCO2e/yr)": float(BEy),
-                    "Grid (MWh/yr)": float(grid_mwh),
-                    "Captive (MWh/yr)": float(captive_mwh),
-                    "Grid EF (t/MWh)": float(grid_ef),
-                    "Fossil (GJ/yr)": float(fossil_gj),
-                    "Fossil EF (t/GJ)": float(fossil_ef),
-                    "Transport (t/yr)": float(transport_t),
-                    "Leak %": float(leak_pct),
-                    "GWP H2": float(gwp_h2),
-                    "PEy (tCO2e/yr)": float(PEy),
-                    "ERy (tCO2e/yr)": float(ERy),
-                    "Years": int(years),
-                    "Total ER (tCO2e)": float(total_ER),
-                    "Grid/Captive Ratio": float(ratio) if np.isfinite(ratio) else None,
-                }
-            )
-            st.success(f"Saved to {path} ✅")
-
-
-# ============================================================
-# VMR0007 – Waste recycling (demo)
-# ============================================================
-
-def vmr0007_waste_demo():
-    st.header("♻ VMR0007 – Solid Waste Recovery & Recycling (Demo)")
-    st.caption("Education-focused demo: baseline disposal vs project recycling + residue + transport + energy.")
-
-    # Demo factor tables (placeholders)
-    BASELINE_EF = {"Plastic": 1.3, "Paper": 0.9, "Metal": 1.5, "Glass": 0.4}
-    PROJECT_EF = {"Plastic": 0.55, "Paper": 0.35, "Metal": 0.20, "Glass": 0.15}
-    TRANSPORT_EF = 0.000102  # tCO2e per tonne-km (demo)
-    DIESEL_EF = 0.0027       # tCO2e per litre diesel (demo)
-    ELECTRICITY_EF = 0.0009  # tCO2e per kWh (demo)
-
-    def calculate_baseline(material, tons):
-        return tons * BASELINE_EF[material]
-
-    def calculate_project_emissions(material, tons_recycled, contamination, diesel_litres, kwh, transport_km):
-        clean_tons = tons_recycled * (1 - contamination / 100.0)
-        residue_tons = tons_recycled - clean_tons
-
-        pe_recycling = clean_tons * PROJECT_EF[material]
-        pe_residuals = residue_tons * BASELINE_EF[material]  # assume residues disposed
-        pe_transport = clean_tons * transport_km * TRANSPORT_EF
-        pe_energy = (diesel_litres * DIESEL_EF) + (kwh * ELECTRICITY_EF)
-
-        total_pe = pe_recycling + pe_residuals + pe_transport + pe_energy
-        return {
-            "clean_tons": clean_tons,
-            "residual_tons": residue_tons,
-            "pe_recycling": pe_recycling,
-            "pe_residuals": pe_residuals,
-            "pe_transport": pe_transport,
-            "pe_energy": pe_energy,
-            "total_pe": total_pe,
-        }
-
-    st.markdown("### 1️⃣ Inputs")
-    c1, c2 = st.columns(2)
-    with c1:
-        material = st.selectbox("Material type", ["Plastic", "Paper", "Metal", "Glass"], key="w_mat")
-        tons = st.number_input("Total material processed (tons/year)", min_value=0.0, step=0.1, value=100.0, key="w_tons")
-        contamination = st.slider("Contamination rate (%)", min_value=0, max_value=40, value=10, key="w_cont")
-    with c2:
-        diesel = st.number_input("Diesel used (litres/year)", min_value=0.0, value=500.0, key="w_diesel")
-        electricity = st.number_input("Electricity use (kWh/year)", min_value=0.0, value=30000.0, key="w_kwh")
-        distance = st.number_input("Transport distance (km)", min_value=0.0, value=15.0, key="w_km")
-
-    st.divider()
-
-    baseline_emissions = calculate_baseline(material, tons)
-    project_data = calculate_project_emissions(material, tons, contamination, diesel, electricity, distance)
-    project_emissions = project_data["total_pe"]
-    er = baseline_emissions - project_emissions
-
-    st.markdown("## 2️⃣ Results")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Baseline (tCO₂e/yr)", f"{baseline_emissions:,.2f}")
-    c2.metric("Project (tCO₂e/yr)", f"{project_emissions:,.2f}")
-    c3.metric("Net ER (tCO₂e/yr)", f"{er:,.2f}")
-
-    st.markdown("### Breakdown")
-    st.dataframe(
-        pd.DataFrame(
-            {
-                "Parameter": [
-                    "Clean recyclable tons",
-                    "Residual tons",
-                    "Project – Recycling",
-                    "Project – Residual disposal",
-                    "Transport emissions",
-                    "Energy emissions",
-                ],
-                "Value": [
-                    f"{project_data['clean_tons']:.2f}",
-                    f"{project_data['residual_tons']:.2f}",
-                    f"{project_data['pe_recycling']:.2f}",
-                    f"{project_data['pe_residuals']:.2f}",
-                    f"{project_data['pe_transport']:.2f}",
-                    f"{project_data['pe_energy']:.2f}",
-                ],
-            }
-        ),
-        use_container_width=True,
+    render_save_panel(
+        methodology="AM0124 (demo) – Hydrogen Electrolysis",
+        total_tco2e=float(total_ER),
+        inputs=inputs,
+        outputs=outputs,
+        notes_default=f"AM0124-style demo over {int(years)} years. Total ER {total_ER:,.2f} tCO2e. Grid/captive ratio={ratio:.3f}.",
     )
 
-    st.divider()
-    st.markdown("## 3️⃣ Save summary to local demo registry (CSV)")
-
-    project_name = st.text_input("Project name", key="w_pname")
-    operator = st.text_input("Operator", key="w_op")
-    reporting_year = st.number_input("Reporting year", min_value=2020, value=date.today().year, step=1, key="w_ry")
-
-    if st.button("💾 Save to demo registry CSV", key="w_save"):
-        if not project_name.strip():
-            st.error("Project name is required.")
-        else:
-            path = save_to_registry_csv(
-                {
-                    "Project": project_name,
-                    "Operator": operator,
-                    "Year": int(reporting_year),
-                    "Methodology": "VMR0007 – Waste (demo)",
-                    "Material": material,
-                    "Total Tons": float(tons),
-                    "Contamination %": int(contamination),
-                    "Baseline (tCO2e/yr)": float(baseline_emissions),
-                    "Project (tCO2e/yr)": float(project_emissions),
-                    "ER (tCO2e/yr)": float(er),
-                    "Diesel (L/yr)": float(diesel),
-                    "Electricity (kWh/yr)": float(electricity),
-                    "Distance (km)": float(distance),
-                }
-            )
-            st.success(f"Saved to {path} ✅")
-
 
 # ============================================================
-# Launcher
+# 3) VMR0007 – Solid Waste Recovery & Recycling (demo-style)
 # ============================================================
+BASELINE_EF = {"Plastic": 1.3, "Paper": 0.9, "Metal": 1.5, "Glass": 0.4}       # tCO2e/ton (demo)
+PROJECT_EF  = {"Plastic": 0.55, "Paper": 0.35, "Metal": 0.20, "Glass": 0.15}   # tCO2e/ton (demo)
+TRANSPORT_EF = 0.000102   # tCO2e per tonne-km (demo)
+DIESEL_EF = 0.0027        # tCO2e per litre (demo)
+ELECTRICITY_EF = 0.0009   # tCO2e per kWh (demo)
 
-st.title("📘 Methodology Demos (Single File)")
-section_note("This page is intentionally single-file for a stable demo/launch. Split into modules later.")
+def vmr0007_app():
+    st.subheader("♻ VMR0007 (demo-style) — Solid Waste Recovery & Recycling")
+
+    with st.expander("📘 Overview", expanded=False):
+        st.markdown(
+            """
+Demo-style structure:
+- Baseline emissions: total tons × baseline EF
+- Project emissions: recycling emissions + residual disposal + transport + energy
+- ER = baseline − project
+All factors shown here are **placeholders** for demonstration only.
+            """
+        )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        material = st.selectbox("Material", ["Plastic", "Paper", "Metal", "Glass"], key="vmr_mat")
+        tons = st.number_input("Total material processed (tons/year)", min_value=0.0, value=100.0, step=0.1, key="vmr_tons")
+        contamination = st.slider("Contamination (%)", 0, 40, 10, key="vmr_cont")
+    with c2:
+        diesel = st.number_input("Diesel used (litres/year)", min_value=0.0, value=500.0, key="vmr_diesel")
+        electricity = st.number_input("Electricity (kWh/year)", min_value=0.0, value=30000.0, key="vmr_kwh")
+        distance = st.number_input("Transport distance (km)", min_value=0.0, value=15.0, key="vmr_km")
+
+    baseline_emissions = float(tons) * float(BASELINE_EF[material])
+
+    clean_tons = float(tons) * (1 - float(contamination) / 100.0)
+    residue_tons = float(tons) - clean_tons
+
+    pe_recycling = clean_tons * float(PROJECT_EF[material])
+    pe_residuals = residue_tons * float(BASELINE_EF[material])
+    pe_transport = clean_tons * float(distance) * float(TRANSPORT_EF)
+    pe_energy = (float(diesel) * float(DIESEL_EF)) + (float(electricity) * float(ELECTRICITY_EF))
+
+    project_emissions = pe_recycling + pe_residuals + pe_transport + pe_energy
+    er = baseline_emissions - project_emissions
+
+    st.markdown("### Results")
+    a, b, c = st.columns(3)
+    a.metric("Baseline (tCO₂e/yr)", f"{baseline_emissions:,.2f}")
+    b.metric("Project (tCO₂e/yr)", f"{project_emissions:,.2f}")
+    c.metric("ER (tCO₂e/yr)", f"{er:,.2f}")
+
+    st.markdown("### Breakdown")
+    st.dataframe(pd.DataFrame({
+        "Item": [
+            "Clean recyclable tons",
+            "Residual tons",
+            "Project – recycling",
+            "Project – residual disposal",
+            "Transport emissions",
+            "Energy emissions",
+        ],
+        "Value": [
+            clean_tons,
+            residue_tons,
+            pe_recycling,
+            pe_residuals,
+            pe_transport,
+            pe_energy,
+        ]
+    }), use_container_width=True)
+
+    inputs = {
+        "material": material,
+        "tons": float(tons),
+        "contamination_pct": float(contamination),
+        "diesel_l": float(diesel),
+        "electricity_kwh": float(electricity),
+        "distance_km": float(distance),
+        "factors": {
+            "BASELINE_EF": BASELINE_EF[material],
+            "PROJECT_EF": PROJECT_EF[material],
+            "TRANSPORT_EF": TRANSPORT_EF,
+            "DIESEL_EF": DIESEL_EF,
+            "ELECTRICITY_EF": ELECTRICITY_EF,
+        }
+    }
+    outputs = {
+        "baseline_tco2e_per_year": baseline_emissions,
+        "project_tco2e_per_year": project_emissions,
+        "er_tco2e_per_year": er,
+        "clean_tons": clean_tons,
+        "residual_tons": residue_tons,
+    }
+
+    render_save_panel(
+        methodology="VMR0007 (demo) – Solid Waste Recovery & Recycling",
+        total_tco2e=float(er),  # annual ER in this MVP
+        inputs=inputs,
+        outputs=outputs,
+        notes_default="VMR0007-style demo. Annual ER saved (not lifetime unless you multiply by years externally).",
+    )
+
+
+# ------------------------------------------------------------
+# PAGE MAIN
+# ------------------------------------------------------------
+st.title("📘 Methodology Calculators")
+st.caption("Single-file, launch-ready demo calculators. No external methodology module imports.")
 
 choice = st.selectbox(
-    "Select a demo methodology:",
+    "Select methodology:",
     [
-        "VM0038 – EV Charging (demo)",
-        "AM0124 – Hydrogen Electrolysis (demo)",
-        "VMR0007 – Waste Recovery & Recycling (demo)",
+        "VM0038 (demo) – EV Charging",
+        "AM0124 (demo) – Hydrogen Electrolysis",
+        "VMR0007 (demo) – Solid Waste Recovery & Recycling",
     ],
 )
 
 st.divider()
 
 if choice.startswith("VM0038"):
-    vm0038_ev_demo()
+    vm0038_ev()
 elif choice.startswith("AM0124"):
-    am0124_hydrogen_demo()
+    am0124_hydrogen_app()
 else:
-    vmr0007_waste_demo()
+    vmr0007_app()
 
 st.divider()
 st.caption(
-    "Important: These are demonstration calculators for discussion and prototyping. "
-    "Defaults are placeholders unless you supply cited emission factors."
+    "Launch note: These are demo-style reference implementations. "
+    "They prove structure + data flow + audit-ready saving, not official crediting."
 )
