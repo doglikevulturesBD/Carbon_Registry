@@ -7,11 +7,16 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
+from utils.load_css import load_css
+
 # ------------------------------------------------------------
-# PAGE CONFIG (do NOT call set_page_config here if already in launcher)
+# PAGE CONFIG
 # ------------------------------------------------------------
+st.set_page_config(page_title="Carbon Registry", page_icon="⚖️", layout="wide")
+load_css()
+
 st.title("⚖️ Carbon Registry")
-st.caption("Project registry + credits + sales + audit logs (beta MRV workbench)")
+st.caption("Foundation registry for boundaries, assumptions, activity logs, and transparent calculator demos (beta).")
 
 # ------------------------------------------------------------
 # SETTINGS
@@ -20,13 +25,9 @@ DB_PATH = Path("data/carbon_registry.db")
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 TAB_KEYS = ["projects", "credits", "audit", "export"]
-TAB_LABELS = ["📂 Projects", "💳 Credits & Sales", "📝 Audit Trail", "⬇️ Export"]
+TAB_LABELS = ["📂 Projects & Foundations", "💳 Credits & Sales (optional)", "📝 Audit Trail", "⬇️ Export"]
 
-# Optional: in Streamlit Cloud you can set secrets:
-# [secrets]
-# DEBUG = true
 DEBUG = bool(st.secrets.get("DEBUG", False)) if hasattr(st, "secrets") else False
-
 
 # ------------------------------------------------------------
 # DB LAYER
@@ -37,19 +38,16 @@ def get_conn() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     return conn
 
-
 def db_exec(query: str, params: Tuple = ()) -> None:
     conn = get_conn()
     conn.execute(query, params)
     conn.commit()
-
 
 def db_query(query: str, params: Tuple = ()) -> pd.DataFrame:
     conn = get_conn()
     cur = conn.execute(query, params)
     rows = cur.fetchall()
     return pd.DataFrame([dict(r) for r in rows])
-
 
 def ensure_schema() -> None:
     db_exec("""
@@ -70,6 +68,22 @@ def ensure_schema() -> None:
         description TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+    );
+    """)
+
+    # NEW: foundational layer (minimal but powerful)
+    db_exec("""
+    CREATE TABLE IF NOT EXISTS project_foundations (
+        project_id TEXT PRIMARY KEY,
+        boundary_summary TEXT,
+        baseline_summary TEXT,
+        intervention_summary TEXT,
+        key_assumptions TEXT,
+        data_sources TEXT,
+        uncertainty_notes TEXT,
+        evidence_checklist TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(project_id)
     );
     """)
 
@@ -123,16 +137,13 @@ def ensure_schema() -> None:
     );
     """)
 
-
 ensure_schema()
-
 
 # ------------------------------------------------------------
 # AUDIT
 # ------------------------------------------------------------
 def now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
 
 def audit_log(
     action: str,
@@ -163,12 +174,10 @@ def audit_log(
         ),
     )
 
-
 # ------------------------------------------------------------
 # QUERY PARAMS (deep-link tabs)
 # ------------------------------------------------------------
 def get_qp(name: str) -> Optional[str]:
-    # New API
     try:
         v = st.query_params.get(name)
         if isinstance(v, list):
@@ -176,7 +185,6 @@ def get_qp(name: str) -> Optional[str]:
         return v
     except Exception:
         pass
-    # Legacy fallback
     try:
         qp = st.experimental_get_query_params()
         v = qp.get(name)
@@ -185,7 +193,6 @@ def get_qp(name: str) -> Optional[str]:
         return v
     except Exception:
         return None
-
 
 def set_qp(**kwargs) -> None:
     try:
@@ -196,25 +203,6 @@ def set_qp(**kwargs) -> None:
             st.experimental_set_query_params(**kwargs)
         except Exception:
             pass
-
-
-# ------------------------------------------------------------
-# UI: GLOBAL CONTEXT / ACTOR
-# ------------------------------------------------------------
-with st.sidebar:
-    st.markdown("### 🧑‍💼 Session")
-    st.text_input("Actor (for audit logs)", key="actor_name", value=st.session_state.get("actor_name", "Brandon"))
-    st.divider()
-
-    st.markdown("### 📌 Active Project")
-    # Loaded later (after project list) – placeholder here
-    st.caption("Select a project inside the Projects tab.")
-
-    st.divider()
-    st.markdown("### ✅ Registry Health")
-    st.write(f"DB: `{DB_PATH.as_posix()}`")
-    st.write("Schema: OK")
-
 
 # ------------------------------------------------------------
 # DATA HELPERS
@@ -227,22 +215,129 @@ def list_projects(active_only: bool = False) -> pd.DataFrame:
     q += " ORDER BY updated_at DESC"
     return db_query(q)
 
-
 def get_project(project_id: str) -> Optional[Dict[str, Any]]:
     df = db_query("SELECT * FROM projects WHERE project_id = ?", (project_id,))
     if df.empty:
         return None
     return df.iloc[0].to_dict()
 
-
 def set_active_project(project_id: Optional[str]) -> None:
     st.session_state.active_project_id = project_id
-
 
 def active_project() -> Optional[Dict[str, Any]]:
     pid = st.session_state.get("active_project_id")
     return get_project(pid) if pid else None
 
+def get_foundation(project_id: str) -> Dict[str, Any]:
+    df = db_query("SELECT * FROM project_foundations WHERE project_id=?", (project_id,))
+    if df.empty:
+        return {
+            "project_id": project_id,
+            "boundary_summary": "",
+            "baseline_summary": "",
+            "intervention_summary": "",
+            "key_assumptions": "",
+            "data_sources": "",
+            "uncertainty_notes": "",
+            "evidence_checklist": "",
+        }
+    return df.iloc[0].to_dict()
+
+def upsert_foundation(project_id: str, payload: Dict[str, Any]) -> None:
+    ts = now_iso()
+    existing = db_query("SELECT * FROM project_foundations WHERE project_id=?", (project_id,))
+    if existing.empty:
+        db_exec(
+            """
+            INSERT INTO project_foundations (
+                project_id, boundary_summary, baseline_summary, intervention_summary,
+                key_assumptions, data_sources, uncertainty_notes, evidence_checklist, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_id,
+                payload.get("boundary_summary"),
+                payload.get("baseline_summary"),
+                payload.get("intervention_summary"),
+                payload.get("key_assumptions"),
+                payload.get("data_sources"),
+                payload.get("uncertainty_notes"),
+                payload.get("evidence_checklist"),
+                ts,
+            ),
+        )
+        audit_log(
+            action="UPSERT",
+            entity_type="project_foundations",
+            entity_id=project_id,
+            project_id=project_id,
+            after=payload,
+            meta={"mode": "insert"},
+        )
+    else:
+        before = existing.iloc[0].to_dict()
+        db_exec(
+            """
+            UPDATE project_foundations SET
+                boundary_summary=?,
+                baseline_summary=?,
+                intervention_summary=?,
+                key_assumptions=?,
+                data_sources=?,
+                uncertainty_notes=?,
+                evidence_checklist=?,
+                updated_at=?
+            WHERE project_id=?
+            """,
+            (
+                payload.get("boundary_summary"),
+                payload.get("baseline_summary"),
+                payload.get("intervention_summary"),
+                payload.get("key_assumptions"),
+                payload.get("data_sources"),
+                payload.get("uncertainty_notes"),
+                payload.get("evidence_checklist"),
+                ts,
+                project_id,
+            ),
+        )
+        after = get_foundation(project_id)
+        audit_log(
+            action="UPSERT",
+            entity_type="project_foundations",
+            entity_id=project_id,
+            project_id=project_id,
+            before=before,
+            after=after,
+            meta={"mode": "update"},
+        )
+
+# ------------------------------------------------------------
+# SIDEBAR
+# ------------------------------------------------------------
+with st.sidebar:
+    st.markdown("### 🧑‍💼 Session")
+    st.text_input("Actor (for audit logs)", key="actor_name", value=st.session_state.get("actor_name", "Brandon"))
+    st.divider()
+
+    st.markdown("### 📌 Active Project")
+    proj = active_project()
+    if proj:
+        st.markdown(f"**{proj.get('project_code','')}**")
+        st.caption(proj.get("project_name", ""))
+        st.write(f"Status: `{proj.get('status','')}`")
+        st.write(f"Standard: `{proj.get('standard','')}`")
+        st.write(f"Methodology: `{proj.get('methodology','')}`")
+        st.write(f"Baseline year: `{proj.get('baseline_year','')}`")
+    else:
+        st.caption("Select a project in the Projects tab.")
+    st.divider()
+
+    st.markdown("### ✅ Registry Health")
+    st.write(f"DB: `{DB_PATH.as_posix()}`")
+    st.write("Schema: OK")
+    if DEBUG:
+        st.caption("DEBUG mode enabled.")
 
 # ------------------------------------------------------------
 # TOP NAV TABS
@@ -251,21 +346,18 @@ initial_tab = get_qp("tab")
 if "tab_key" not in st.session_state:
     st.session_state.tab_key = initial_tab if initial_tab in TAB_KEYS else "projects"
 
-tab_index = TAB_KEYS.index(st.session_state.tab_key)
 tabs = st.tabs(TAB_LABELS)
 
 def goto_tab(key: str) -> None:
     st.session_state.tab_key = key
     set_qp(tab=key)
 
-
 # ------------------------------------------------------------
-# TAB 1: PROJECTS (CRUD)
+# TAB 1: PROJECTS & FOUNDATIONS (CRUD)
 # ------------------------------------------------------------
 with tabs[0]:
-    st.subheader("📂 Projects")
+    st.subheader("📂 Projects & Foundations")
 
-    # Quick list
     cols = st.columns([2, 1, 1])
     with cols[0]:
         show_active_only = st.checkbox("Show active only", value=False)
@@ -280,12 +372,10 @@ with tabs[0]:
 
     dfp = list_projects(active_only=show_active_only)
 
-    # Project selector
     if dfp.empty:
         st.info("No projects yet. Create your first project below.")
         selected_project_id = None
     else:
-        # Ensure selection persists
         current = st.session_state.get("active_project_id")
         options = dfp["project_id"].tolist()
         default_idx = options.index(current) if current in options else 0
@@ -300,12 +390,13 @@ with tabs[0]:
 
     st.divider()
 
+    # CREATE PROJECT
     st.markdown("### ➕ Create new project")
     with st.form("create_project_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         with c1:
             project_code = st.text_input("Project code (unique)", placeholder="CR-0001")
-            project_name = st.text_input("Project name*", placeholder="Alicedale Solar + Storage MRV")
+            project_name = st.text_input("Project name*", placeholder="Alicedale Solar + Storage (Foundation)")
             owner_org = st.text_input("Owner/Developer org", placeholder="Davoren Insights / Partner")
         with c2:
             country = st.text_input("Country", value="South Africa")
@@ -313,14 +404,15 @@ with tabs[0]:
             sector = st.selectbox("Sector", ["Energy", "Transport", "Waste", "AFOLU", "Industry", "Other"])
         with c3:
             standard = st.selectbox("Standard", ["VCS (Verra)", "Gold Standard", "ISO 14064", "Other"])
-            methodology = st.text_input("Methodology", placeholder="VM0038 / VMR0007 / ...")
+            methodology = st.text_input("Methodology (optional)", placeholder="VM0038 / VMR0007 / ...")
             baseline_year = st.number_input("Baseline year", min_value=1900, max_value=2100, value=2024)
 
         d1, d2 = st.columns(2)
         with d1:
             start_date = st.date_input("Start date", value=date.today())
         with d2:
-            end_date = st.date_input("End date (optional)", value=None)
+            has_end = st.checkbox("Has end date?", value=False)
+            end_date = st.date_input("End date", value=date.today()) if has_end else None
 
         description = st.text_area("Description / notes", height=80)
 
@@ -372,91 +464,130 @@ with tabs[0]:
                 st.success("Project created.")
                 st.rerun()
 
-    # Edit / Archive current project
-    if selected_project_id:
-        proj = active_project()
-        if proj:
-            st.markdown("### ✏️ Edit active project")
-            with st.form("edit_project_form"):
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    e_project_code = st.text_input("Project code", value=proj.get("project_code") or "")
-                    e_project_name = st.text_input("Project name", value=proj.get("project_name") or "")
-                    e_owner_org = st.text_input("Owner/Developer org", value=proj.get("owner_org") or "")
-                with c2:
-                    e_country = st.text_input("Country", value=proj.get("country") or "")
-                    e_region = st.text_input("Region / Province", value=proj.get("region") or "")
-                    e_sector = st.selectbox("Sector", ["Energy", "Transport", "Waste", "AFOLU", "Industry", "Other"],
-                                            index=["Energy","Transport","Waste","AFOLU","Industry","Other"].index(proj.get("sector") or "Energy"))
-                with c3:
-                    e_standard = st.selectbox("Standard", ["VCS (Verra)", "Gold Standard", "ISO 14064", "Other"],
-                                              index=["VCS (Verra)","Gold Standard","ISO 14064","Other"].index(proj.get("standard") or "VCS (Verra)"))
-                    e_methodology = st.text_input("Methodology", value=proj.get("methodology") or "")
-                    e_baseline_year = st.number_input("Baseline year", min_value=1900, max_value=2100, value=int(proj.get("baseline_year") or 2024))
+    # EDIT PROJECT + FOUNDATIONS
+    proj = active_project()
+    if proj:
+        st.markdown("### 🧱 Project Foundations (the important part)")
+        st.caption("Capture boundaries + assumptions before calculators. This becomes your foundation layer for everything downstream.")
 
-                d1, d2, d3 = st.columns(3)
-                with d1:
-                    e_start_date = st.text_input("Start date (YYYY-MM-DD)", value=proj.get("start_date") or "")
-                with d2:
-                    e_end_date = st.text_input("End date (YYYY-MM-DD)", value=proj.get("end_date") or "")
-                with d3:
-                    e_status = st.selectbox("Status", ["Active", "Archived"], index=["Active","Archived"].index(proj.get("status") or "Active"))
+        foundation = get_foundation(proj["project_id"])
 
-                e_description = st.text_area("Description / notes", value=proj.get("description") or "", height=80)
+        with st.form("foundations_form"):
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                boundary_summary = st.text_area("Boundary summary (what's in/out)", value=foundation.get("boundary_summary", ""), height=110)
+                baseline_summary = st.text_area("Baseline summary (what would happen otherwise)", value=foundation.get("baseline_summary", ""), height=110)
+                intervention_summary = st.text_area("Intervention summary (what changes)", value=foundation.get("intervention_summary", ""), height=110)
+            with fc2:
+                key_assumptions = st.text_area("Key assumptions", value=foundation.get("key_assumptions", ""), height=110)
+                data_sources = st.text_area("Data sources (what datasets, meters, invoices, grid factors)", value=foundation.get("data_sources", ""), height=110)
+                uncertainty_notes = st.text_area("Uncertainty notes (what is noisy/unknown)", value=foundation.get("uncertainty_notes", ""), height=110)
 
-                save = st.form_submit_button("Save changes", use_container_width=True)
+            evidence_checklist = st.text_area(
+                "Evidence checklist (what you would need to verify this later)",
+                value=foundation.get("evidence_checklist", ""),
+                height=90
+            )
 
-                if save:
-                    before = proj.copy()
-                    ts = now_iso()
-                    db_exec(
-                        """
-                        UPDATE projects SET
-                            project_code=?, project_name=?, owner_org=?, country=?, region=?, sector=?,
-                            methodology=?, standard=?, baseline_year=?, start_date=?, end_date=?, status=?,
-                            description=?, updated_at=?
-                        WHERE project_id=?
-                        """,
-                        (
-                            e_project_code.strip(),
-                            e_project_name.strip(),
-                            e_owner_org.strip() or None,
-                            e_country.strip() or None,
-                            e_region.strip() or None,
-                            e_sector,
-                            e_methodology.strip() or None,
-                            e_standard,
-                            int(e_baseline_year),
-                            e_start_date.strip() or None,
-                            e_end_date.strip() or None,
-                            e_status,
-                            e_description.strip() or None,
-                            ts,
-                            proj["project_id"],
-                        ),
-                    )
-                    after = get_project(proj["project_id"]) or {}
-                    audit_log(
-                        action="UPDATE",
-                        entity_type="project",
-                        entity_id=proj["project_id"],
-                        project_id=proj["project_id"],
-                        before=before,
-                        after=after,
-                    )
-                    list_projects.clear()
-                    st.success("Saved.")
-                    st.rerun()
+            save_foundations = st.form_submit_button("Save foundations", use_container_width=True)
 
-            st.markdown("### 📄 Current projects table")
-            st.dataframe(dfp, use_container_width=True, hide_index=True)
+            if save_foundations:
+                payload = {
+                    "boundary_summary": boundary_summary.strip(),
+                    "baseline_summary": baseline_summary.strip(),
+                    "intervention_summary": intervention_summary.strip(),
+                    "key_assumptions": key_assumptions.strip(),
+                    "data_sources": data_sources.strip(),
+                    "uncertainty_notes": uncertainty_notes.strip(),
+                    "evidence_checklist": evidence_checklist.strip(),
+                }
+                upsert_foundation(proj["project_id"], payload)
+                st.success("Foundations saved.")
+                st.rerun()
 
+        st.divider()
+        st.markdown("### ✏️ Edit project metadata")
+        with st.form("edit_project_form"):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                e_project_code = st.text_input("Project code", value=proj.get("project_code") or "")
+                e_project_name = st.text_input("Project name", value=proj.get("project_name") or "")
+                e_owner_org = st.text_input("Owner/Developer org", value=proj.get("owner_org") or "")
+            with c2:
+                e_country = st.text_input("Country", value=proj.get("country") or "")
+                e_region = st.text_input("Region / Province", value=proj.get("region") or "")
+                sectors = ["Energy", "Transport", "Waste", "AFOLU", "Industry", "Other"]
+                e_sector = st.selectbox("Sector", sectors, index=sectors.index(proj.get("sector") or "Energy"))
+            with c3:
+                standards = ["VCS (Verra)", "Gold Standard", "ISO 14064", "Other"]
+                e_standard = st.selectbox("Standard", standards, index=standards.index(proj.get("standard") or "VCS (Verra)"))
+                e_methodology = st.text_input("Methodology", value=proj.get("methodology") or "")
+                e_baseline_year = st.number_input("Baseline year", min_value=1900, max_value=2100, value=int(proj.get("baseline_year") or 2024))
+
+            d1, d2, d3 = st.columns(3)
+            with d1:
+                e_start_date = st.text_input("Start date (YYYY-MM-DD)", value=proj.get("start_date") or "")
+            with d2:
+                e_end_date = st.text_input("End date (YYYY-MM-DD)", value=proj.get("end_date") or "")
+            with d3:
+                statuses = ["Active", "Archived"]
+                e_status = st.selectbox("Status", statuses, index=statuses.index(proj.get("status") or "Active"))
+
+            e_description = st.text_area("Description / notes", value=proj.get("description") or "", height=80)
+
+            save = st.form_submit_button("Save changes", use_container_width=True)
+
+            if save:
+                before = proj.copy()
+                ts = now_iso()
+                db_exec(
+                    """
+                    UPDATE projects SET
+                        project_code=?, project_name=?, owner_org=?, country=?, region=?, sector=?,
+                        methodology=?, standard=?, baseline_year=?, start_date=?, end_date=?, status=?,
+                        description=?, updated_at=?
+                    WHERE project_id=?
+                    """,
+                    (
+                        e_project_code.strip(),
+                        e_project_name.strip(),
+                        e_owner_org.strip() or None,
+                        e_country.strip() or None,
+                        e_region.strip() or None,
+                        e_sector,
+                        e_methodology.strip() or None,
+                        e_standard,
+                        int(e_baseline_year),
+                        e_start_date.strip() or None,
+                        e_end_date.strip() or None,
+                        e_status,
+                        e_description.strip() or None,
+                        ts,
+                        proj["project_id"],
+                    ),
+                )
+                after = get_project(proj["project_id"]) or {}
+                audit_log(
+                    action="UPDATE",
+                    entity_type="project",
+                    entity_id=proj["project_id"],
+                    project_id=proj["project_id"],
+                    before=before,
+                    after=after,
+                )
+                list_projects.clear()
+                st.success("Saved.")
+                st.rerun()
+
+        st.markdown("### 📄 Current projects table")
+        st.dataframe(dfp, use_container_width=True, hide_index=True)
 
 # ------------------------------------------------------------
-# TAB 2: CREDITS & SALES
+# TAB 2: CREDITS & SALES (optional tracking)
 # ------------------------------------------------------------
 with tabs[1]:
-    st.subheader("💳 Credits & Sales")
+    st.subheader("💳 Credits & Sales (optional)")
+    st.caption("Optional tracking layer. Not a registry-of-record. Use for internal analysis only.")
 
     proj = active_project()
     if not proj:
@@ -464,7 +595,6 @@ with tabs[1]:
     else:
         st.markdown(f"**Active project:** `{proj['project_code']}` — {proj['project_name']}")
 
-        # Credits issued
         st.markdown("### 🧾 Record credit issuance (vintage)")
         with st.form("create_credit_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
@@ -509,7 +639,6 @@ with tabs[1]:
                 st.success("Issuance recorded.")
                 st.rerun()
 
-        # Sales
         st.markdown("### 💰 Record sale")
         credits_df = db_query(
             "SELECT credit_id, vintage_year, credits_issued, issuance_date FROM credits WHERE project_id=? ORDER BY vintage_year DESC",
@@ -573,7 +702,6 @@ with tabs[1]:
                 st.success("Sale recorded.")
                 st.rerun()
 
-        # Summary + tables
         st.markdown("### 📈 Summary")
         issued = db_query("SELECT COALESCE(SUM(credits_issued),0) as total_issued FROM credits WHERE project_id=?", (proj["project_id"],)).iloc[0]["total_issued"]
         sold = db_query("SELECT COALESCE(SUM(credits_sold),0) as total_sold FROM sales WHERE project_id=?", (proj["project_id"],)).iloc[0]["total_sold"]
@@ -599,7 +727,6 @@ with tabs[1]:
             (proj["project_id"],)
         )
         st.dataframe(sales_df, use_container_width=True, hide_index=True)
-
 
 # ------------------------------------------------------------
 # TAB 3: AUDIT
@@ -630,7 +757,6 @@ with tabs[2]:
             else:
                 st.json(row.iloc[0].to_dict())
 
-
 # ------------------------------------------------------------
 # TAB 4: EXPORT
 # ------------------------------------------------------------
@@ -645,6 +771,7 @@ with tabs[3]:
             pid = proj["project_id"]
             return {
                 "projects": db_query("SELECT * FROM projects WHERE project_id=?", (pid,)),
+                "project_foundations": db_query("SELECT * FROM project_foundations WHERE project_id=?", (pid,)),
                 "credits": db_query("SELECT * FROM credits WHERE project_id=?", (pid,)),
                 "sales": db_query("SELECT * FROM sales WHERE project_id=?", (pid,)),
                 "audit": db_query("SELECT * FROM audit_logs WHERE project_id=? ORDER BY timestamp DESC", (pid,)),
@@ -652,6 +779,7 @@ with tabs[3]:
         else:
             return {
                 "projects": db_query("SELECT * FROM projects ORDER BY updated_at DESC"),
+                "project_foundations": db_query("SELECT * FROM project_foundations ORDER BY updated_at DESC"),
                 "credits": db_query("SELECT * FROM credits ORDER BY updated_at DESC"),
                 "sales": db_query("SELECT * FROM sales ORDER BY updated_at DESC"),
                 "audit": db_query("SELECT * FROM audit_logs ORDER BY timestamp DESC"),
@@ -673,5 +801,8 @@ with tabs[3]:
             )
 
 st.divider()
-st.caption("Beta registry. Next steps: methodology-specific MRV calculators, document evidence vault, and automated validation rules.")
+st.caption(
+    "Foundation beta. Next steps: Dialogue layer (guided boundary + assumption prompts) "
+    "and demo calculators with explicit factors + uncertainty ranges."
+)
 
