@@ -75,9 +75,9 @@ with st.sidebar:
         st.write("4) Export notes/results for review.")
 
     with st.expander("What’s new"):
-        st.write("- Repositioned as a foundation tool (not audit-grade MRV)")
-        st.write("- Quick Actions now work (roadmap/docs/bug/what’s new)")
-        st.write("- Clearer wording and stronger disclaimers")
+        st.write("- Home hub repositioned as foundation tool (not audit-grade MRV)")
+        st.write("- Quick Actions enabled (roadmap/docs/bug/what’s new)")
+        st.write("- Clearer module descriptions + disclaimers")
 
 
 # ---------------------------------------------------------
@@ -88,7 +88,7 @@ st.markdown(
     <div style='padding: 28px 30px 14px 30px;'>
     <h1 style='color:#86ffcf; text-shadow:0 0 10px #39ff9f; margin-bottom:6px;'>
     🌍 Carbon Registry & Methods Explorer
-    </h1>
+     </h1>
 
     <p style='font-size:18px; color:#b3ffdd; margin-top:0;'>
     A transparent workspace for <b>boundaries</b>, <b>assumptions</b>, activity logs, and calculator demos.
@@ -134,8 +134,7 @@ with qa3:
     if st.button("🐞 Report Bug", key="qa_bug", use_container_width=True):
         st.warning("Bug reporting (temporary): copy/paste this into your notes or issue tracker.")
         st.code(
-            f"App: {APP_TITLE}\nVersion: {APP_VERSION}\nPage: Home\n"
-            f"Streamlit: {st.__version__}",
+            f"App: {APP_TITLE}\nVersion: {APP_VERSION}\nPage: Home\nStreamlit: {st.__version__}",
             language="text",
         )
 
