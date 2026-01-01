@@ -2,20 +2,16 @@
 # ------------------------------------------------------------
 # Carbon Registry • Scope 1/2/3 Calculator (Cloud-safe, single file)
 #
-# v1.1 "guided but honest" upgrades:
-# ✅ Guided activity builders + direct entry
-# ✅ Emission factor (EF) guidance panel (sources, metadata, unit discipline)
-# ✅ Uncertainty wizard (quality bands → auto-fill %) + simple propagation
-# ✅ Optional: save results to MRV ledger (SQLite) with audit-ready JSON
+# v1.2 "guided but honest" upgrades:
+# ✅ Page config + shared CSS
+# ✅ Save -> calc_runs + audit_logs entry (registry consistency)
+# ✅ Baseline=0 handled (no forced error; % becomes N/A)
+# ✅ Notes + better run naming
+# ✅ Minor unit safety warnings
 #
 # IMPORTANT:
 # - This tool does NOT ship official EF values. Users must input EF and cite a source.
 # - Guidance here is structural and educational; verification depends on your standard/methodology.
-#
-# Assumptions:
-# - Registry page creates `projects` table in data/carbon_registry.db:
-#     project_id, project_code, project_name, status, updated_at
-# - This page creates `calc_runs` if missing.
 # ------------------------------------------------------------
 
 import streamlit as st
@@ -23,14 +19,19 @@ import sqlite3
 import json
 import uuid
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, Dict, Any, Tuple, List
 
 import pandas as pd
 
+from utils.load_css import load_css
+
 # ------------------------------------------------------------
-# Page header
+# PAGE CONFIG
 # ------------------------------------------------------------
+st.set_page_config(page_title="Scope 1/2/3 Calculator", page_icon="📊", layout="wide")
+load_css()
+
 st.title("📊 Scope 1 / 2 / 3 Calculator")
 st.caption("Guided calculations + EF/uncertainty discipline + optional save to MRV ledger.")
 
@@ -83,8 +84,61 @@ def ensure_schema() -> None:
         """
     )
 
+    # If registry page already created this, no harm.
+    db_exec(
+        """
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            audit_id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            actor TEXT,
+            action TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT,
+            project_id TEXT,
+            before_json TEXT,
+            after_json TEXT,
+            meta_json TEXT
+        );
+        """
+    )
+
 ensure_schema()
 
+# ------------------------------------------------------------
+# AUDIT
+# ------------------------------------------------------------
+def audit_log(
+    action: str,
+    entity_type: str,
+    entity_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    before: Optional[Dict[str, Any]] = None,
+    after: Optional[Dict[str, Any]] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> None:
+    actor = st.session_state.get("actor_name", "unknown")
+    db_exec(
+        """
+        INSERT INTO audit_logs (audit_id, timestamp, actor, action, entity_type, entity_id, project_id, before_json, after_json, meta_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(uuid.uuid4()),
+            now_iso(),
+            actor,
+            action,
+            entity_type,
+            entity_id,
+            project_id,
+            json.dumps(before, ensure_ascii=False) if before else None,
+            json.dumps(after, ensure_ascii=False) if after else None,
+            json.dumps(meta, ensure_ascii=False) if meta else None,
+        ),
+    )
+
+# ------------------------------------------------------------
+# Projects + save helpers
+# ------------------------------------------------------------
 def list_projects() -> pd.DataFrame:
     try:
         df = db_query(
@@ -150,11 +204,32 @@ def save_calc_run(
             ts,
         ),
     )
+
+    # Audit log entry
+    audit_log(
+        action="CREATE",
+        entity_type="calc_run",
+        entity_id=calc_id,
+        project_id=project_id,
+        after={
+            "calc_name": calc_name,
+            "scope_label": scope_label,
+            "period_start": period_start,
+            "period_end": period_end,
+            "baseline_tco2e": baseline_tco2e,
+            "project_tco2e": project_tco2e,
+            "reduction_tco2e": reduction_tco2e,
+            "factor_source": factor_source.strip(),
+            "status": status,
+        },
+        meta={"calc_type": "scope"},
+    )
+
     return calc_id
 
 def render_save_panel(
     *,
-    calc_name: str,
+    calc_name_default: str,
     scope_label: str,
     period_start: Optional[str],
     period_end: Optional[str],
@@ -188,28 +263,37 @@ def render_save_panel(
         with c2:
             pe = st.text_input("Period end (YYYY-MM-DD)", value=period_end or "")
 
+        calc_name = st.text_input("Run name", value=calc_name_default)
+
+        notes = st.text_area("Notes (optional)", height=80, placeholder="Any caveats, boundary notes, missing data, estimation method...")
+
         factor_source = st.text_area(
             "Emission factor source / reference (required to save)",
             placeholder=(
-                "Example: 'Dataset/standard name, version, year, geography. URL or document title. "
-                "E.g., Utility disclosure 2024, Eskom factor 2024, IPCC AR6 table X...' "
+                "Dataset/standard name, version, year, geography/boundary. "
+                "If Scope 2, also specify market vs location basis. "
+                "Include URL or document reference where possible."
             ),
             height=90,
         )
         status = st.selectbox("Status", ["final", "draft"], index=0)
 
-        can_save = (baseline_tco2e is not None) and bool(factor_source.strip())
+        # Attach notes in inputs for traceability
+        inputs_to_save = dict(inputs)
+        inputs_to_save["run_notes"] = notes.strip() or None
+
+        can_save = (baseline_tco2e is not None) and bool(factor_source.strip()) and bool(calc_name.strip())
         if st.button("✅ Save to Ledger", use_container_width=True, disabled=not can_save):
             calc_id = save_calc_run(
                 project_id=pid,
-                calc_name=calc_name,
+                calc_name=calc_name.strip(),
                 scope_label=scope_label,
                 period_start=ps.strip() or None,
                 period_end=pe.strip() or None,
                 baseline_tco2e=baseline_tco2e,
                 project_tco2e=project_tco2e,
                 reduction_tco2e=reduction_tco2e,
-                inputs=inputs,
+                inputs=inputs_to_save,
                 outputs=outputs,
                 factor_source=factor_source,
                 status=status,
@@ -224,28 +308,32 @@ def kg_to_t(kg: float) -> float:
 
 def compute_baseline_project_reduction(
     baseline_activity: float, project_activity: float, ef_kgco2e_per_unit: float
-) -> Dict[str, float]:
+) -> Dict[str, Optional[float]]:
     baseline_kg = baseline_activity * ef_kgco2e_per_unit
     project_kg = project_activity * ef_kgco2e_per_unit
     reduction_kg = baseline_kg - project_kg
-    pct = (reduction_kg / baseline_kg * 100.0) if baseline_kg > 0 else 0.0
+
+    reduction_pct = None
+    if baseline_kg > 0:
+        reduction_pct = (reduction_kg / baseline_kg * 100.0)
+
     return {
         "baseline_tco2e": kg_to_t(baseline_kg),
         "project_tco2e": kg_to_t(project_kg),
         "reduction_tco2e": kg_to_t(reduction_kg),
-        "reduction_pct": pct,
+        "reduction_pct": reduction_pct,
     }
 
-def metric_row(baseline_t: float, project_t: float, reduction_t: float, pct: float) -> None:
+def metric_row(baseline_t: float, project_t: float, reduction_t: float, pct: Optional[float]) -> None:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Baseline (tCO₂e)", f"{baseline_t:,.4f}")
     c2.metric("Project (tCO₂e)", f"{project_t:,.4f}")
     c3.metric("Reduction (tCO₂e)", f"{reduction_t:,.4f}")
-    c4.metric("Reduction (%)", f"{pct:.2f}%")
+    c4.metric("Reduction (%)", "N/A" if pct is None else f"{pct:.2f}%")
 
-def require_positive_baseline(baseline: float) -> bool:
-    if baseline <= 0:
-        st.error("Baseline activity must be > 0 to compute reductions.")
+def require_nonnegative_activity(x: float, label: str) -> bool:
+    if x < 0:
+        st.error(f"{label} must be ≥ 0.")
         return False
     return True
 
@@ -268,28 +356,15 @@ UNCERTAINTY_BANDS = {
 }
 
 def combined_rel_uncertainty(*rel_uncertainties: float) -> float:
-    # Quadrature: sqrt(sum(u_i^2))
     return (sum((u ** 2 for u in rel_uncertainties))) ** 0.5
 
 def apply_uncertainty(value: float, rel_u: float) -> Tuple[float, float, float]:
-    # returns (lower, nominal, upper) with ±
     delta = abs(value) * rel_u
     return value - delta, value, value + delta
 
 def uncertainty_panel(scope_key: str) -> Dict[str, float]:
-    """
-    Returns:
-      {
-        "baseline_activity_u_pct": ...,
-        "project_activity_u_pct": ...,
-        "ef_u_pct": ...,
-        "baseline_rel_u": ...,
-        "project_rel_u": ...,
-        "reduction_rel_u": ...
-      }
-    """
     with st.expander("📉 Uncertainty (screening-level, optional)", expanded=False):
-        st.caption("Use this to express data quality. These are not verification opinions; they support internal screening and MRV readiness.")
+        st.caption("Use this to express data quality for internal screening and MRV readiness.")
 
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -308,19 +383,14 @@ def uncertainty_panel(scope_key: str) -> Dict[str, float]:
         p_u = band_to_pct(p_band, "project_activity")
         ef_u = band_to_pct(ef_band, "ef")
 
-        # Relative uncertainties
         b_rel = b_u / 100.0
         p_rel = p_u / 100.0
         ef_rel = ef_u / 100.0
 
-        # Emissions uncertainty: emissions = activity * EF → rel_u = sqrt(uA^2 + uEF^2)
         baseline_rel = combined_rel_uncertainty(b_rel, ef_rel)
         project_rel = combined_rel_uncertainty(p_rel, ef_rel)
 
-        # Reduction uncertainty is messy (difference of uncertain values).
-        # Screening approach: combine absolute uncertainties in quadrature then divide by |reduction| (if non-zero).
-        # We'll compute later once we know baseline/project emissions.
-        st.caption("Reduction uncertainty is computed after calculation (baseline/project combined).")
+        st.caption("Reduction uncertainty computed after calculation (baseline/project combined).")
 
         return {
             "baseline_activity_u_pct": b_u,
@@ -337,11 +407,9 @@ def render_uncertainty_results(baseline_t: float, project_t: float, reduction_t:
     b_lo, b_nom, b_hi = apply_uncertainty(baseline_t, baseline_rel)
     p_lo, p_nom, p_hi = apply_uncertainty(project_t, project_rel)
 
-    # Absolute uncertainties:
     b_abs = abs(b_hi - b_nom)
     p_abs = abs(p_hi - p_nom)
 
-    # Reduction = baseline - project, abs_u = sqrt(b_abs^2 + p_abs^2)
     red_abs = (b_abs**2 + p_abs**2) ** 0.5
     red_rel = (red_abs / abs(reduction_t)) if abs(reduction_t) > 1e-12 else None
 
@@ -349,11 +417,9 @@ def render_uncertainty_results(baseline_t: float, project_t: float, reduction_t:
     c1, c2, c3 = st.columns(3)
     c1.metric("Baseline ± (tCO₂e)", f"{b_nom:,.4f} ± {b_abs:,.4f}")
     c2.metric("Project ± (tCO₂e)", f"{p_nom:,.4f} ± {p_abs:,.4f}")
+    c3.metric("Reduction ± (tCO₂e)", f"{reduction_t:,.4f} ± {red_abs:,.4f}")
     if red_rel is None:
-        c3.metric("Reduction ± (tCO₂e)", f"{reduction_t:,.4f} ± {red_abs:,.4f}")
         st.caption("Note: Reduction relative uncertainty not shown because reduction is ~0.")
-    else:
-        c3.metric("Reduction ± (tCO₂e)", f"{reduction_t:,.4f} ± {red_abs:,.4f}")
 
     return {
         "baseline_rel_u": baseline_rel,
@@ -370,16 +436,13 @@ def render_uncertainty_results(baseline_t: float, project_t: float, reduction_t:
 EF_SOURCES_GENERAL = [
     "IPCC Guidelines / national inventory factors (country-specific)",
     "National utility disclosures / grid operator factors (Scope 2)",
-    "Government conversion factor publications (e.g., UK Government GHG Conversion Factors)",
+    "Government conversion factor publications (e.g., UK Gov GHG Conversion Factors)",
     "US EPA (eGRID for electricity; other published factors)",
     "GHG Protocol guidance (factor selection principles, market vs location-based)",
     "Supplier-specific data (EPDs, LCAs) for Scope 3 where available",
 ]
 
 def ef_guidance_panel(scope_label: str, unit: str) -> Dict[str, Any]:
-    """
-    Returns a dict of EF metadata to embed into inputs_json for traceability.
-    """
     with st.expander("🧾 Emission factor guidance + metadata (recommended)", expanded=True):
         st.markdown(
             f"""
@@ -405,7 +468,6 @@ This tool does not provide official factors. Use a credible dataset and record:
             ef_geography = st.text_input("EF geography / boundary (e.g., country, grid region)", value="")
             ef_notes = st.text_input("EF notes (optional)", value="")
 
-        # Optional sanity check (heuristic only)
         st.caption("Sanity checks are heuristics only (do not override authoritative sources).")
         sanity_on = st.checkbox("Enable basic sanity warnings", value=True)
 
@@ -419,48 +481,34 @@ This tool does not provide official factors. Use a credible dataset and record:
             "ef_sanity_warnings_enabled": sanity_on,
         }
 
-def ef_sanity_warnings(scope_label: str, unit: str, ef_kg_per_unit: float) -> None:
-    # Extremely conservative heuristics—only warn on clearly suspicious cases.
-    # IMPORTANT: We avoid providing "typical values" claims; we only flag obvious unit errors.
+def ef_sanity_warnings(unit: str, ef_kg_per_unit: float) -> None:
     if ef_kg_per_unit <= 0:
         return
-
-    # Common unit mistakes:
-    # - User enters tCO2e/unit instead of kgCO2e/unit (factor 1000x too high)
-    # - User enters gCO2e/unit instead of kgCO2e/unit (factor 1000x too low)
     if ef_kg_per_unit > 1e4:
-        st.warning(
-            "EF is extremely large. Check that you entered **kgCO₂e per unit** (not tCO₂e per unit). "
-            "Also confirm the unit (kWh vs MWh, liters vs gallons, etc.)."
-        )
+        st.warning("EF is extremely large. Check units (kg vs t, kWh vs MWh, liters vs gallons, etc.).")
     if 0 < ef_kg_per_unit < 1e-6:
-        st.warning(
-            "EF is extremely small. Check that you entered **kgCO₂e per unit** (not gCO₂e per unit). "
-            "Also confirm the activity unit."
-        )
+        st.warning("EF is extremely small. Check units (kg vs g) and activity unit consistency.")
 
 # ------------------------------------------------------------
-# Light guidance blocks (consultant framing)
+# Light guidance blocks
 # ------------------------------------------------------------
 def consultant_notes(scope_label: str) -> None:
     with st.expander("🧭 Consultant notes (read before publishing results)", expanded=False):
         st.markdown(
             f"""
-**This calculator helps you structure and compute emissions**, but it does not replace a full MRV advisory engagement.
-
 For **{scope_label}**, results can change materially depending on:
-- **Boundary definition** (organizational + operational control, included assets/sites, time period)
-- **Baseline definition** (baseline year vs typical year; data gaps; normalization)
-- **Emission factor choice** (geography, year, dataset version, market vs location-based for Scope 2)
-- **Evidence quality** (bills, invoices, meter exports, maintenance logs)
-- **Double counting risks** (especially Scope 2/3 interactions and supplier claims)
+- Boundary definition
+- Baseline definition
+- EF choice (geography/year/version; Scope 2 market vs location)
+- Evidence quality
+- Double-counting risks
 
-If these decisions are unclear, treat outputs as **screening-level** until validated.
+Treat outputs as **screening-level** until validated.
             """.strip()
         )
 
 # ------------------------------------------------------------
-# Guided activity builders utilities
+# Builders
 # ------------------------------------------------------------
 def period_inputs(prefix: str) -> Tuple[str, str]:
     c1, c2 = st.columns(2)
@@ -529,7 +577,57 @@ RESULT_KEYS = {
 }
 
 # ------------------------------------------------------------
-# Scope 1
+# Calculation core
+# ------------------------------------------------------------
+def compute_and_render(scope_label: str, category: str, unit: str,
+                       period_start: str, period_end: str,
+                       baseline_activity: float, project_activity: float, ef_kg: float,
+                       inputs_extra: Dict[str, Any]) -> None:
+
+    if not require_nonnegative_activity(baseline_activity, "Baseline activity"):
+        return
+    if not require_nonnegative_activity(project_activity, "Project activity"):
+        return
+    if not require_positive_ef(ef_kg):
+        return
+
+    res = compute_baseline_project_reduction(baseline_activity, project_activity, ef_kg)
+    st.success("Calculated.")
+    metric_row(res["baseline_tco2e"], res["project_tco2e"], res["reduction_tco2e"], res["reduction_pct"])
+
+    u_meta = inputs_extra.get("uncertainty", {})
+    u_results = render_uncertainty_results(res["baseline_tco2e"], res["project_tco2e"], res["reduction_tco2e"], u_meta)
+
+    inputs = {
+        "scope": scope_label,
+        "category": category,
+        "unit": unit,
+        "period_start": period_start or None,
+        "period_end": period_end or None,
+        "baseline_activity": baseline_activity,
+        "project_activity": project_activity,
+        "ef_kgco2e_per_unit": ef_kg,
+        **inputs_extra,
+    }
+    outputs = {**res, "scope": scope_label, "category": category, "unit": unit, "uncertainty_results": u_results}
+
+    with st.expander("Show calculation details", expanded=False):
+        st.markdown(
+            f"""
+**Equation:** Emissions (tCO₂e) = Activity × EF ÷ 1000
+
+- Baseline: {baseline_activity:,.6g} {unit} × {ef_kg:,.6g} kgCO₂e/{unit} ÷ 1000
+- Project: {project_activity:,.6g} {unit} × {ef_kg:,.6g} kgCO₂e/{unit} ÷ 1000
+            """.strip()
+        )
+        if res["reduction_pct"] is None:
+            st.caption("Reduction % is N/A because baseline emissions are 0.")
+
+    key = RESULT_KEYS["scope1"] if scope_label == "Scope 1" else RESULT_KEYS["scope2"] if scope_label == "Scope 2" else RESULT_KEYS["scope3"]
+    st.session_state[key] = {"inputs": inputs, "outputs": outputs, "period_start": period_start, "period_end": period_end}
+
+# ------------------------------------------------------------
+# Scope 1 / 2 / 3 pages (your structure kept)
 # ------------------------------------------------------------
 def calc_scope1() -> None:
     st.header("Scope 1 – Direct emissions (fuels, gases, refrigerants)")
@@ -560,7 +658,6 @@ def calc_scope1() -> None:
         )
 
         if guided_method == "Fuel from invoices (table)":
-            st.write(f"Enter invoice line items. Totals are summed as {unit}.")
             cols = ["date", "supplier", f"quantity_{unit}", "notes"]
             key_b = "s1_inv_baseline"
             key_p = "s1_inv_project"
@@ -579,103 +676,69 @@ def calc_scope1() -> None:
             st.session_state[key_p] = dfp
             project_activity = sum_numeric_column(dfp, f"quantity_{unit}")
 
-            st.info(f"Derived baseline activity: **{baseline_activity:,.3f} {unit}** • project activity: **{project_activity:,.3f} {unit}**")
+            st.info(f"Derived baseline: **{baseline_activity:,.3f} {unit}** • project: **{project_activity:,.3f} {unit}**")
 
         elif guided_method == "Fuel from distance (simple)":
             st.write("Helper: litres = km × (L/100km) ÷ 100")
-            c1, c2 = st.columns(2)
-            with c1:
-                baseline_km = st.number_input("Baseline distance (km)", min_value=0.0, value=0.0)
-                baseline_l_per_100 = st.number_input("Baseline fuel economy (L/100km)", min_value=0.0, value=0.0)
-            with c2:
-                project_km = st.number_input("Project distance (km)", min_value=0.0, value=0.0)
-                project_l_per_100 = st.number_input("Project fuel economy (L/100km)", min_value=0.0, value=0.0)
+            baseline_km = st.number_input("Baseline distance (km)", min_value=0.0, value=0.0)
+            baseline_l_per_100 = st.number_input("Baseline fuel economy (L/100km)", min_value=0.0, value=0.0)
+            project_km = st.number_input("Project distance (km)", min_value=0.0, value=0.0)
+            project_l_per_100 = st.number_input("Project fuel economy (L/100km)", min_value=0.0, value=0.0)
 
             baseline_activity = baseline_km * (baseline_l_per_100 / 100.0)
             project_activity = project_km * (project_l_per_100 / 100.0)
 
             st.info(f"Derived baseline fuel: **{baseline_activity:,.3f} L** • project fuel: **{project_activity:,.3f} L**")
             if unit != "L":
-                st.warning(f"Selected unit is **{unit}** but this method outputs liters. Consider a liters-based category or use Direct entry.")
+                st.error("This method outputs liters. Choose a liters-based category (diesel/petrol) or use Direct entry.")
+                return
 
         elif guided_method == "Refrigerant leakage (simple)":
-            st.write("Simple proxy: leaked ≈ top-ups − recovered (bounded ≥ 0).")
-            c1, c2 = st.columns(2)
-            with c1:
-                baseline_topup = st.number_input("Baseline refrigerant top-up (kg)", min_value=0.0, value=0.0)
-                baseline_recovered = st.number_input("Baseline recovered (kg) [optional]", min_value=0.0, value=0.0)
-            with c2:
-                project_topup = st.number_input("Project refrigerant top-up (kg)", min_value=0.0, value=0.0)
-                project_recovered = st.number_input("Project recovered (kg) [optional]", min_value=0.0, value=0.0)
+            baseline_topup = st.number_input("Baseline refrigerant top-up (kg)", min_value=0.0, value=0.0)
+            baseline_recovered = st.number_input("Baseline recovered (kg) [optional]", min_value=0.0, value=0.0)
+            project_topup = st.number_input("Project refrigerant top-up (kg)", min_value=0.0, value=0.0)
+            project_recovered = st.number_input("Project recovered (kg) [optional]", min_value=0.0, value=0.0)
 
             baseline_activity = max(0.0, baseline_topup - baseline_recovered)
             project_activity = max(0.0, project_topup - project_recovered)
 
             st.info(f"Derived baseline leaked: **{baseline_activity:,.3f} kg** • project leaked: **{project_activity:,.3f} kg**")
             if unit != "kg":
-                st.warning(f"Selected unit is **{unit}** but this method outputs kg. Consider a kg-based category or use Direct entry.")
-
+                st.error("This method outputs kg. Choose a kg-based category (refrigerants/LPG) or use Direct entry.")
+                return
         else:
             baseline_activity = st.number_input(f"Baseline activity total ({unit})", min_value=0.0, value=0.0, key="s1_base_custom")
             project_activity = st.number_input(f"Project activity total ({unit})", min_value=0.0, value=0.0, key="s1_proj_custom")
-
     else:
         baseline_activity = st.number_input(f"Baseline activity ({unit} per period)", min_value=0.0, value=0.0, key="s1_base")
         project_activity = st.number_input(f"Project activity ({unit} per period)", min_value=0.0, value=0.0, key="s1_proj")
 
     ef_meta = ef_guidance_panel("Scope 1", unit)
-    st.markdown("#### Emission factor")
-    ef_kg = st.number_input(f"EF (kg CO₂e per {unit})", min_value=0.0, value=0.0, key="s1_ef")
-
-    if ef_meta.get("ef_sanity_warnings_enabled"):
-        ef_sanity_warnings("Scope 1", unit, ef_kg)
-
     u_meta = uncertainty_panel("s1")
 
-    calc_btn = st.button("Calculate Scope 1", use_container_width=True, key="s1_calc")
-    if calc_btn:
-        if not require_positive_baseline(baseline_activity) or not require_positive_ef(ef_kg):
-            return
+    st.markdown("#### Emission factor")
+    ef_kg = st.number_input(f"EF (kg CO₂e per {unit})", min_value=0.0, value=0.0, key="s1_ef")
+    if ef_meta.get("ef_sanity_warnings_enabled"):
+        ef_sanity_warnings(unit, ef_kg)
 
-        res = compute_baseline_project_reduction(baseline_activity, project_activity, ef_kg)
-        st.success("Calculated.")
-        metric_row(res["baseline_tco2e"], res["project_tco2e"], res["reduction_tco2e"], res["reduction_pct"])
-
-        u_results = render_uncertainty_results(res["baseline_tco2e"], res["project_tco2e"], res["reduction_tco2e"], u_meta)
-
-        inputs = {
-            "scope": "Scope 1",
-            "category": category,
-            "unit": unit,
-            "period_start": period_start or None,
-            "period_end": period_end or None,
-            "input_mode": mode,
-            "guided_method": guided_method,
-            "baseline_activity": baseline_activity,
-            "project_activity": project_activity,
-            "ef_kgco2e_per_unit": ef_kg,
-            "ef_metadata": ef_meta,
-            "uncertainty": u_meta,
-        }
-        outputs = {**res, "scope": "Scope 1", "category": category, "unit": unit, "uncertainty_results": u_results}
-
-        with st.expander("Show calculation details", expanded=False):
-            st.markdown(
-                f"""
-**Equation:** Emissions (tCO₂e) = Activity × EF ÷ 1000
-
-- Baseline: {baseline_activity:,.6g} {unit} × {ef_kg:,.6g} kgCO₂e/{unit} ÷ 1000
-- Project: {project_activity:,.6g} {unit} × {ef_kg:,.6g} kgCO₂e/{unit} ÷ 1000
-                """.strip()
-            )
-
-        st.session_state[RESULT_KEYS["scope1"]] = {"inputs": inputs, "outputs": outputs, "period_start": period_start, "period_end": period_end}
+    if st.button("Calculate Scope 1", use_container_width=True, key="s1_calc"):
+        compute_and_render(
+            "Scope 1", category, unit, period_start, period_end,
+            baseline_activity, project_activity, ef_kg,
+            {
+                "input_mode": mode,
+                "guided_method": guided_method,
+                "ef_metadata": ef_meta,
+                "uncertainty": u_meta,
+            }
+        )
 
     if RESULT_KEYS["scope1"] in st.session_state:
         last = st.session_state[RESULT_KEYS["scope1"]]
         o = last["outputs"]
+        calc_name_default = f"Scope 1 — {o.get('category')} — {last.get('period_start','') or 'period'}"
         render_save_panel(
-            calc_name=f"Scope 1 — {o.get('category')}",
+            calc_name_default=calc_name_default,
             scope_label="Scope 1",
             period_start=last.get("period_start"),
             period_end=last.get("period_end"),
@@ -686,9 +749,6 @@ def calc_scope1() -> None:
             outputs=o,
         )
 
-# ------------------------------------------------------------
-# Scope 2
-# ------------------------------------------------------------
 def calc_scope2() -> None:
     st.header("Scope 2 – Purchased energy (electricity, steam, heat, cooling)")
     consultant_notes("Scope 2")
@@ -699,9 +759,9 @@ def calc_scope2() -> None:
 
     guidance_box(
         "Scope 2",
-        baseline_meaning="Total purchased energy consumed in the baseline period (e.g., grid electricity kWh).",
+        baseline_meaning="Total purchased energy consumed in the baseline period (e.g., grid electricity).",
         project_meaning="Total purchased energy consumed in the project period (same boundary + comparable period).",
-        evidence=["Utility bills", "Meter downloads / AMI exports", "Energy management system exports", "On-site generation reports (for context)"],
+        evidence=["Utility bills", "Meter downloads", "Energy management exports"],
     )
 
     mode = st.radio("Input mode", ["Guided (recommended)", "Direct entry (advanced)"], horizontal=True, key="s2_mode")
@@ -710,14 +770,9 @@ def calc_scope2() -> None:
     guided_method = None
 
     if mode.startswith("Guided"):
-        guided_method = st.selectbox(
-            "Guided method",
-            ["Bills / meter readings (table)", "PV displacement helper (simple)", "Custom (manual total)"],
-            key="s2_method"
-        )
+        guided_method = st.selectbox("Guided method", ["Bills / meter readings (table)", "PV displacement helper (simple)", "Custom (manual total)"], key="s2_method")
 
         if guided_method == "Bills / meter readings (table)":
-            st.write(f"Enter readings; totals will be summed as {unit}.")
             cols = ["period_label", f"consumption_{unit}", "notes"]
             key_b = "s2_tbl_baseline"
             key_p = "s2_tbl_project"
@@ -736,20 +791,17 @@ def calc_scope2() -> None:
             st.session_state[key_p] = dfp
             project_activity = sum_numeric_column(dfp, f"consumption_{unit}")
 
-            st.info(f"Derived baseline consumption: **{baseline_activity:,.3f} {unit}** • project consumption: **{project_activity:,.3f} {unit}**")
+            st.info(f"Derived baseline: **{baseline_activity:,.3f} {unit}** • project: **{project_activity:,.3f} {unit}**")
 
         elif guided_method == "PV displacement helper (simple)":
-            st.write("Quick helper: project grid consumption = baseline grid consumption − PV used on-site.")
             baseline_grid = st.number_input(f"Baseline grid consumption ({unit})", min_value=0.0, value=0.0, key="s2_base_grid")
             pv_used = st.number_input(f"PV used on-site (same period, {unit})", min_value=0.0, value=0.0, key="s2_pv_used")
             baseline_activity = baseline_grid
             project_activity = max(0.0, baseline_grid - pv_used)
             st.info(f"Derived project grid consumption: **{project_activity:,.3f} {unit}**")
-
         else:
             baseline_activity = st.number_input(f"Baseline activity total ({unit})", min_value=0.0, value=0.0, key="s2_base_custom")
             project_activity = st.number_input(f"Project activity total ({unit})", min_value=0.0, value=0.0, key="s2_proj_custom")
-
     else:
         baseline_activity = st.number_input(f"Baseline activity ({unit} per period)", min_value=0.0, value=0.0, key="s2_base")
         project_activity = st.number_input(f"Project activity ({unit} per period)", min_value=0.0, value=0.0, key="s2_proj")
@@ -758,10 +810,14 @@ def calc_scope2() -> None:
     factor_basis = st.radio("Factor basis", ["Location-based", "Market-based", "Other/Custom"], horizontal=True, key="s2_basis")
 
     ef_meta = ef_guidance_panel("Scope 2", unit)
+    ef_meta = {**ef_meta, "factor_basis": factor_basis}
+
+    u_meta = uncertainty_panel("s2")
+
     st.markdown("#### Emission factor")
     ef_kg = st.number_input(f"EF (kg CO₂e per {unit})", min_value=0.0, value=0.0, key="s2_ef")
     if ef_meta.get("ef_sanity_warnings_enabled"):
-        ef_sanity_warnings("Scope 2", unit, ef_kg)
+        ef_sanity_warnings(unit, ef_kg)
 
     c3, c4 = st.columns(2)
     with c3:
@@ -769,57 +825,27 @@ def calc_scope2() -> None:
     with c4:
         grid_region = st.text_input("Grid region (optional)", key="s2_region")
 
-    u_meta = uncertainty_panel("s2")
-
-    calc_btn = st.button("Calculate Scope 2", use_container_width=True, key="s2_calc")
-    if calc_btn:
-        if not require_positive_baseline(baseline_activity) or not require_positive_ef(ef_kg):
-            return
-
-        res = compute_baseline_project_reduction(baseline_activity, project_activity, ef_kg)
-        st.success("Calculated.")
-        metric_row(res["baseline_tco2e"], res["project_tco2e"], res["reduction_tco2e"], res["reduction_pct"])
-
-        u_results = render_uncertainty_results(res["baseline_tco2e"], res["project_tco2e"], res["reduction_tco2e"], u_meta)
-
-        inputs = {
-            "scope": "Scope 2",
-            "category": category,
-            "unit": unit,
-            "period_start": period_start or None,
-            "period_end": period_end or None,
-            "input_mode": mode,
-            "guided_method": guided_method,
-            "baseline_activity": baseline_activity,
-            "project_activity": project_activity,
-            "factor_basis": factor_basis,
-            "ef_kgco2e_per_unit": ef_kg,
-            "supplier": supplier,
-            "grid_region": grid_region,
-            "ef_metadata": {**ef_meta, "factor_basis": factor_basis},
-            "uncertainty": u_meta,
-        }
-        outputs = {**res, "scope": "Scope 2", "category": category, "unit": unit, "factor_basis": factor_basis, "uncertainty_results": u_results}
-
-        with st.expander("Show calculation details", expanded=False):
-            st.markdown(
-                f"""
-**Equation:** Emissions (tCO₂e) = Activity × EF ÷ 1000
-
-- Baseline: {baseline_activity:,.6g} {unit} × {ef_kg:,.6g} kgCO₂e/{unit} ÷ 1000
-- Project: {project_activity:,.6g} {unit} × {ef_kg:,.6g} kgCO₂e/{unit} ÷ 1000
-
-**Factor basis selected:** {factor_basis}
-                """.strip()
-            )
-
-        st.session_state[RESULT_KEYS["scope2"]] = {"inputs": inputs, "outputs": outputs, "period_start": period_start, "period_end": period_end}
+    if st.button("Calculate Scope 2", use_container_width=True, key="s2_calc"):
+        compute_and_render(
+            "Scope 2", category, unit, period_start, period_end,
+            baseline_activity, project_activity, ef_kg,
+            {
+                "input_mode": mode,
+                "guided_method": guided_method,
+                "factor_basis": factor_basis,
+                "supplier": supplier,
+                "grid_region": grid_region,
+                "ef_metadata": ef_meta,
+                "uncertainty": u_meta,
+            }
+        )
 
     if RESULT_KEYS["scope2"] in st.session_state:
         last = st.session_state[RESULT_KEYS["scope2"]]
         o = last["outputs"]
+        calc_name_default = f"Scope 2 — {o.get('category')} — {o.get('factor_basis','')} — {last.get('period_start','') or 'period'}"
         render_save_panel(
-            calc_name=f"Scope 2 — {o.get('category')} ({o.get('factor_basis')})",
+            calc_name_default=calc_name_default,
             scope_label="Scope 2",
             period_start=last.get("period_start"),
             period_end=last.get("period_end"),
@@ -830,9 +856,6 @@ def calc_scope2() -> None:
             outputs=o,
         )
 
-# ------------------------------------------------------------
-# Scope 3
-# ------------------------------------------------------------
 def calc_scope3() -> None:
     st.header("Scope 3 – Value chain emissions (GHG Protocol categories)")
     consultant_notes("Scope 3")
@@ -843,33 +866,22 @@ def calc_scope3() -> None:
 
     guidance_box(
         "Scope 3",
-        baseline_meaning="Total value-chain activity in the baseline period (depends on category and method).",
-        project_meaning="Total value-chain activity in the project period (same boundary + comparable period).",
-        evidence=["Supplier invoices / procurement extracts", "Travel booking exports", "Freight waybills", "Waste manifests", "Commuting surveys / HR data"],
+        baseline_meaning="Total value-chain activity in the baseline period (depends on category + method).",
+        project_meaning="Total value-chain activity in the project period (comparable period).",
+        evidence=["Procurement extracts", "Travel booking exports", "Freight waybills", "Waste manifests", "Commuting surveys"],
     )
 
-    unit = st.text_input(
-        "Unit (be specific)",
-        value=default_unit,
-        placeholder="e.g., passenger-km, ton-km, kg, km, nights, spend-ZAR, units",
-        key="s3_unit"
-    )
+    unit = st.text_input("Unit (be specific)", value=default_unit, key="s3_unit")
 
     mode = st.radio("Input mode", ["Guided (recommended)", "Direct entry (advanced)"], horizontal=True, key="s3_mode")
-
     baseline_activity = 0.0
     project_activity = 0.0
     guided_method = None
 
     if mode.startswith("Guided"):
-        guided_method = st.selectbox(
-            "Guided method",
-            ["Spend-based (table)", "Distance-based (table)", "Mass-based (table)", "Custom (manual total)"],
-            key="s3_method"
-        )
+        guided_method = st.selectbox("Guided method", ["Spend-based (table)", "Distance-based (table)", "Mass-based (table)", "Custom (manual total)"], key="s3_method")
 
         if guided_method == "Spend-based (table)":
-            st.write("Enter spend lines. Your EF must match your spend unit (e.g., kgCO₂e per ZAR).")
             cols = ["supplier/category", f"spend_{unit}", "notes"]
             key_b = "s3_spend_baseline"
             key_p = "s3_spend_project"
@@ -888,10 +900,7 @@ def calc_scope3() -> None:
             st.session_state[key_p] = dfp
             project_activity = sum_numeric_column(dfp, f"spend_{unit}")
 
-            st.info(f"Derived baseline spend: **{baseline_activity:,.3f} {unit}** • project spend: **{project_activity:,.3f} {unit}**")
-
         elif guided_method == "Distance-based (table)":
-            st.write("Enter distance lines. Ensure EF matches your chosen unit.")
             cols = ["route/activity", f"distance_{unit}", "notes"]
             key_b = "s3_dist_baseline"
             key_p = "s3_dist_project"
@@ -910,10 +919,7 @@ def calc_scope3() -> None:
             st.session_state[key_p] = dfp
             project_activity = sum_numeric_column(dfp, f"distance_{unit}")
 
-            st.info(f"Derived baseline distance: **{baseline_activity:,.3f} {unit}** • project distance: **{project_activity:,.3f} {unit}**")
-
         elif guided_method == "Mass-based (table)":
-            st.write("Enter mass lines. Ensure EF matches your mass unit.")
             cols = ["material/waste type", f"mass_{unit}", "notes"]
             key_b = "s3_mass_baseline"
             key_p = "s3_mass_project"
@@ -921,92 +927,57 @@ def calc_scope3() -> None:
                 st.session_state[key_b] = df_default(cols)
             if key_p not in st.session_state:
                 st.session_state[key_p] = df_default(cols)
+
             st.markdown("**Baseline mass lines**")
             dfb = st.data_editor(st.session_state[key_b], key="s3_mass_baseline_editor", use_container_width=True, num_rows="dynamic")
             st.session_state[key_b] = dfb
             baseline_activity = sum_numeric_column(dfb, f"mass_{unit}")
+
             st.markdown("**Project mass lines**")
             dfp = st.data_editor(st.session_state[key_p], key="s3_mass_project_editor", use_container_width=True, num_rows="dynamic")
             st.session_state[key_p] = dfp
             project_activity = sum_numeric_column(dfp, f"mass_{unit}")
-
-            st.info(f"Derived baseline mass: **{baseline_activity:,.3f} {unit}** • project mass: **{project_activity:,.3f} {unit}**")
-
         else:
             baseline_activity = st.number_input(f"Baseline activity total ({unit})", min_value=0.0, value=0.0, key="s3_base_custom")
             project_activity = st.number_input(f"Project activity total ({unit})", min_value=0.0, value=0.0, key="s3_proj_custom")
-
     else:
-        c1, c2 = st.columns(2)
-        with c1:
-            baseline_activity = st.number_input(f"Baseline activity ({unit} per period)", min_value=0.0, value=0.0, key="s3_base")
-        with c2:
-            project_activity = st.number_input(f"Project activity ({unit} per period)", min_value=0.0, value=0.0, key="s3_proj")
+        baseline_activity = st.number_input(f"Baseline activity ({unit} per period)", min_value=0.0, value=0.0, key="s3_base")
+        project_activity = st.number_input(f"Project activity ({unit} per period)", min_value=0.0, value=0.0, key="s3_proj")
 
     ef_meta = ef_guidance_panel("Scope 3", unit)
+    u_meta = uncertainty_panel("s3")
+
     st.markdown("#### Emission factor")
     ef_kg = st.number_input(f"EF (kg CO₂e per {unit})", min_value=0.0, value=0.0, key="s3_ef")
     if ef_meta.get("ef_sanity_warnings_enabled"):
-        ef_sanity_warnings("Scope 3", unit, ef_kg)
+        ef_sanity_warnings(unit, ef_kg)
 
     c5, c6 = st.columns(2)
     with c5:
-        activity_method = st.selectbox(
-            "Activity data method (metadata)",
-            ["", "Spend-based", "Distance-based", "Mass-based", "Supplier-specific", "Hybrid"],
-            key="s3_meta_method",
-        )
+        activity_method = st.selectbox("Activity data method (metadata)", ["", "Spend-based", "Distance-based", "Mass-based", "Supplier-specific", "Hybrid"], key="s3_meta_method")
     with c6:
-        boundary_note = st.text_input("Boundary note (optional)", placeholder="e.g., upstream logistics only", key="s3_boundary")
+        boundary_note = st.text_input("Boundary note (optional)", key="s3_boundary")
 
-    u_meta = uncertainty_panel("s3")
-
-    calc_btn = st.button("Calculate Scope 3", use_container_width=True, key="s3_calc")
-    if calc_btn:
-        if not require_positive_baseline(baseline_activity) or not require_positive_ef(ef_kg):
-            return
-
-        res = compute_baseline_project_reduction(baseline_activity, project_activity, ef_kg)
-        st.success("Calculated.")
-        metric_row(res["baseline_tco2e"], res["project_tco2e"], res["reduction_tco2e"], res["reduction_pct"])
-
-        u_results = render_uncertainty_results(res["baseline_tco2e"], res["project_tco2e"], res["reduction_tco2e"], u_meta)
-
-        inputs = {
-            "scope": "Scope 3",
-            "category": category,
-            "unit": unit,
-            "period_start": period_start or None,
-            "period_end": period_end or None,
-            "input_mode": mode,
-            "guided_method": guided_method,
-            "baseline_activity": baseline_activity,
-            "project_activity": project_activity,
-            "ef_kgco2e_per_unit": ef_kg,
-            "activity_method_meta": activity_method,
-            "boundary_note": boundary_note,
-            "ef_metadata": ef_meta,
-            "uncertainty": u_meta,
-        }
-        outputs = {**res, "scope": "Scope 3", "category": category, "unit": unit, "uncertainty_results": u_results}
-
-        with st.expander("Show calculation details", expanded=False):
-            st.markdown(
-                f"""
-**Equation:** Emissions (tCO₂e) = Activity × EF ÷ 1000
-
-- Baseline: {baseline_activity:,.6g} {unit} × {ef_kg:,.6g} kgCO₂e/{unit} ÷ 1000
-- Project: {project_activity:,.6g} {unit} × {ef_kg:,.6g} kgCO₂e/{unit} ÷ 1000
-                """.strip()
-            )
-
-        st.session_state[RESULT_KEYS["scope3"]] = {"inputs": inputs, "outputs": outputs, "period_start": period_start, "period_end": period_end}
+    if st.button("Calculate Scope 3", use_container_width=True, key="s3_calc"):
+        compute_and_render(
+            "Scope 3", category, unit, period_start, period_end,
+            baseline_activity, project_activity, ef_kg,
+            {
+                "input_mode": mode,
+                "guided_method": guided_method,
+                "activity_method_meta": activity_method,
+                "boundary_note": boundary_note,
+                "ef_metadata": ef_meta,
+                "uncertainty": u_meta,
+            }
+        )
 
     if RESULT_KEYS["scope3"] in st.session_state:
         last = st.session_state[RESULT_KEYS["scope3"]]
         o = last["outputs"]
+        calc_name_default = f"Scope 3 — {o.get('category')} — {last.get('period_start','') or 'period'}"
         render_save_panel(
-            calc_name=f"Scope 3 — {o.get('category')}",
+            calc_name_default=calc_name_default,
             scope_label="Scope 3",
             period_start=last.get("period_start"),
             period_end=last.get("period_end"),
@@ -1040,3 +1011,4 @@ st.caption(
     "When saving to the ledger, EF source/reference is required. "
     "Uncertainty outputs are screening-level and do not represent verification."
 )
+
