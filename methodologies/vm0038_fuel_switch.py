@@ -1,30 +1,102 @@
+# methodologies/vm0038_ev.py
+# ------------------------------------------------------------
+# VM0038-style EV Charging Methodology (DEMO / Workbench)
+#
+# Integrates with the existing Carbon Registry SQLite DB:
+#   data/carbon_registry.db
+#
+# Writes results to:
+#   calc_runs  (created by Scope Calculator page)
+#
+# NOTE:
+# - This is a "VM0038-style" educational implementation, not an official verifier tool.
+# - Users must record EF sources / assumptions for audit readiness.
+# ------------------------------------------------------------
+
 import streamlit as st
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
+import sqlite3
+import json
+import uuid
 import pandas as pd
 import altair as alt
-
-from registry.database import SessionLocal
-from registry.crud import list_projects, add_emission
+from typing import Tuple, Optional, Dict, Any
 
 
 # ---------------------------
-# Default emission factors (kg CO₂e / litre)
+# DB (SQLite) — same as Registry page
+# ---------------------------
+DB_PATH = Path("data/carbon_registry.db")
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+@st.cache_resource
+def get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def db_exec(query: str, params: Tuple = ()) -> None:
+    conn = get_conn()
+    conn.execute(query, params)
+    conn.commit()
+
+def db_query(query: str, params: Tuple = ()) -> pd.DataFrame:
+    conn = get_conn()
+    rows = conn.execute(query, params).fetchall()
+    return pd.DataFrame([dict(r) for r in rows])
+
+def now_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+# ---------------------------
+# Ensure calc_runs exists (same schema as Scope Calculator page)
+# ---------------------------
+def ensure_calc_runs_schema() -> None:
+    db_exec(
+        """
+        CREATE TABLE IF NOT EXISTS calc_runs (
+            calc_id TEXT PRIMARY KEY,
+            project_id TEXT,
+            calc_type TEXT NOT NULL,      -- 'scope' | 'methodology'
+            calc_name TEXT NOT NULL,
+            scope_label TEXT,
+            period_start TEXT,
+            period_end TEXT,
+            baseline_tco2e REAL,
+            project_tco2e REAL,
+            reduction_tco2e REAL,
+            inputs_json TEXT,
+            outputs_json TEXT,
+            factor_source TEXT,
+            status TEXT DEFAULT 'final',
+            actor TEXT,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
+
+ensure_calc_runs_schema()
+
+
+# ---------------------------
+# Default emission factors (DEMO VALUES)
+# IMPORTANT: These are placeholders for demo. For any real MRV, users must cite sources.
 # ---------------------------
 FUEL_EF = {
-    "Petrol": 2.31,
+    "Petrol": 2.31,   # kg CO2e / litre
     "Diesel": 2.68,
     "LPG": 1.51,
     "Other": None,
 }
 
-# Well-to-tank (upstream) emissions (kg CO₂e / litre)
 WTT_EF = {
-    "Petrol": 0.52,
+    "Petrol": 0.52,   # kg CO2e / litre (upstream)
     "Diesel": 0.58,
     "LPG": 0.21,
 }
 
-# Approximate lower heating value (MJ / litre)
 FUEL_ENERGY_MJ = {
     "Petrol": 34.2,
     "Diesel": 38.6,
@@ -32,67 +104,148 @@ FUEL_ENERGY_MJ = {
     "Other": 0.0,
 }
 
-# Renewable electricity EF (assumed 0 for CO₂e)
 RENEWABLE_EF = 0.0
 
 
+# ---------------------------
+# Project listing (reads your registry 'projects' table)
+# ---------------------------
+def list_projects() -> pd.DataFrame:
+    try:
+        df = db_query(
+            """
+            SELECT project_id, project_code, project_name, status, updated_at
+            FROM projects
+            ORDER BY updated_at DESC
+            """
+        )
+        if not df.empty:
+            df["project_code"] = df["project_code"].fillna("")
+            df["project_name"] = df["project_name"].fillna("")
+            df["label"] = df["project_code"] + " — " + df["project_name"]
+        return df
+    except Exception:
+        return pd.DataFrame(columns=["project_id", "project_code", "project_name", "status", "updated_at", "label"])
+
+
+def save_methodology_run(
+    *,
+    project_id: str,
+    calc_name: str,
+    period_start: Optional[str],
+    period_end: Optional[str],
+    baseline_tco2e: float,
+    project_tco2e: float,
+    reduction_tco2e: float,
+    inputs: Dict[str, Any],
+    outputs: Dict[str, Any],
+    factor_source: str,
+    status: str = "final"
+) -> str:
+    calc_id = str(uuid.uuid4())
+    actor = st.session_state.get("actor_name", "unknown")
+    ts = now_iso()
+
+    db_exec(
+        """
+        INSERT INTO calc_runs (
+            calc_id, project_id, calc_type, calc_name, scope_label,
+            period_start, period_end,
+            baseline_tco2e, project_tco2e, reduction_tco2e,
+            inputs_json, outputs_json, factor_source,
+            status, actor, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            calc_id,
+            project_id,
+            "methodology",
+            calc_name,
+            "VM0038-style",
+            period_start,
+            period_end,
+            float(baseline_tco2e),
+            float(project_tco2e),
+            float(reduction_tco2e),
+            json.dumps(inputs, ensure_ascii=False),
+            json.dumps(outputs, ensure_ascii=False),
+            factor_source.strip(),
+            status,
+            actor,
+            ts,
+        ),
+    )
+    return calc_id
+
+
+# ---------------------------
+# Main methodology UI
+# ---------------------------
 def vm0038_ev():
-    st.title("⚡ VM0038 – EV Charging System Methodology")
+    st.title("⚡ VM0038 – EV Charging System Methodology (Style / Demo)")
     st.caption("Baseline: Internal combustion vehicles | Project: Electric vehicles with grid/renewable electricity")
 
-    # -------------------------------------------------
-    # 0. Methodology summary (collapsible)
-    # -------------------------------------------------
     with st.expander("📘 Methodology overview (VM0038-style)", expanded=False):
         st.markdown(
             """
-            This tool implements a **VM0038-style EV charging methodology**:
+This module demonstrates a **VM0038-style structure** (educational workbench):
 
-            - **Baseline emissions (BEy)**: fuel consumption of internal combustion vehicles  
-              \\( BE_y = FC_{fuel,y} \\times EF_{fuel} \\)  
-              with optional *well-to-tank (WTT)* upstream emissions.
+- **Baseline emissions (BEy)**: avoided ICE fuel  
+  \\( BE_y = FC_{fuel,y} \\times (EF_{fuel} + EF_{WTT}) \\)
 
-            - **Project emissions (PEy)**: electricity used to charge EVs  
-              \\( PE_y = E_{EV,y} \\times EF_{grid,y} \\),  
-              adjusted for:
-                - charging efficiency losses
-                - renewable fraction in electricity supply
-                - grid decarbonisation over time.
+- **Project emissions (PEy)**: EV charging electricity  
+  \\( PE_y = E_{EV,y} \\times EF_{grid,y} \\)  
+  adjusted for charging efficiency + renewable share + grid decarbonisation.
 
-            - **Net emission reduction per year**:  
-              \\( ER_y = BE_y - PE_y \\)
+- **Net emission reduction**  
+  \\( ER_y = BE_y - PE_y \\) and \\( ER_{total} = \\sum ER_y \\)
 
-            - **Total emission reductions**:  
-              \\( ER_{total} = \\sum_y ER_y \\)
-
-            This implementation also adds:
-            - Multiple charger aggregation from charging sessions
-            - Fuel energy equivalence (MJ/year)
-            - Uncertainty ranges for BEy, PEy and ER_y
-            - Annual table, charts, CSV download
-            - Direct saving of total reductions into the **Carbon Registry**.
+Includes:
+- Charger fleet aggregation
+- Energy equivalence (MJ/year)
+- Uncertainty bands (screening-level)
+- Annual table + charts + CSV
+- Save results into registry ledger (`calc_runs`)
             """
         )
 
-    # -------------------------------------------------
-    # 1. Project selection for saving
-    # -------------------------------------------------
-    with SessionLocal() as session:
-        projects = list_projects(session)
+    st.divider()
 
-    if not projects:
-        st.error("Create a project in the Carbon Registry before using this methodology.")
+    # ---------------------------
+    # 1) Project selection
+    # ---------------------------
+    projs = list_projects()
+    if projs.empty:
+        st.error("No projects found. Create a project in the Registry page first.")
         return
 
-    project_map = {f"{p.id}: {p.name}": p.id for p in projects}
-    selected_project_label = st.selectbox("Save VM0038 results to project:", list(project_map.keys()))
-    project_id = project_map[selected_project_label]
+    active_pid = st.session_state.get("active_project_id")
+    options = projs["project_id"].tolist()
+    default_idx = options.index(active_pid) if active_pid in options else 0
+
+    project_id = st.selectbox(
+        "Save VM0038 results to project:",
+        options=options,
+        index=default_idx,
+        format_func=lambda pid: projs.loc[projs.project_id == pid, "label"].values[0],
+    )
 
     st.divider()
 
-    # -------------------------------------------------
-    # 2. Baseline – fuel avoided
-    # -------------------------------------------------
+    # ---------------------------
+    # Optional period metadata
+    # ---------------------------
+    p1, p2 = st.columns(2)
+    with p1:
+        period_start = st.text_input("Period start (YYYY-MM-DD)", value="")
+    with p2:
+        period_end = st.text_input("Period end (YYYY-MM-DD)", value="")
+
+    st.divider()
+
+    # ---------------------------
+    # 2) Baseline – fuel avoided
+    # ---------------------------
     st.subheader("1. Baseline – Fuel Consumption Avoided (Internal Combustion Vehicles)")
 
     col1, col2 = st.columns(2)
@@ -106,27 +259,23 @@ def vm0038_ev():
 
     wtt_ef = WTT_EF.get(fuel_type, 0.0) if include_wtt else 0.0
 
-    # Fuel energy equivalence
     energy_mj_year = fuel_use_l * FUEL_ENERGY_MJ.get(fuel_type, 0.0)
-
-    col_energy1, col_energy2 = st.columns(2)
-    with col_energy1:
+    e1, e2 = st.columns(2)
+    with e1:
         st.info(f"Fuel energy equivalent: **{energy_mj_year:,.1f} MJ/year**")
-    with col_energy2:
-        st.caption("Approximate lower heating value used; for diagnostics only, not in CO₂e calculation.")
+    with e2:
+        st.caption("Energy equivalence is for diagnostics; not used in CO₂e accounting.")
 
-    # Uncertainty on baseline
     baseline_uncert_pct = st.slider("Baseline emission uncertainty (%):", 0.0, 20.0, 5.0, step=0.5)
 
     BEy_kg = fuel_use_l * (ef_fuel + wtt_ef)
-
     st.write(f"**Baseline emissions (BEy): {BEy_kg:,.2f} kg CO₂e/year**")
 
     st.divider()
 
-    # -------------------------------------------------
-    # 3. Project emissions – electricity for EV charging
-    # -------------------------------------------------
+    # ---------------------------
+    # 3) Project emissions – electricity
+    # ---------------------------
     st.subheader("2. Project – EV Charging Electricity Use")
 
     mode = st.radio(
@@ -136,10 +285,10 @@ def vm0038_ev():
     )
 
     if mode == "Direct annual kWh":
-        col1, col2 = st.columns(2)
-        with col1:
+        c1, c2 = st.columns(2)
+        with c1:
             kwh_year = st.number_input("EV charging electricity (kWh/year):", min_value=0.0, step=0.01)
-        with col2:
+        with c2:
             charge_eff = st.slider("Charging system efficiency (%):", 70, 100, 90)
     else:
         st.markdown("**Charger fleet parameters**")
@@ -157,18 +306,15 @@ def vm0038_ev():
         st.info(f"Derived annual EV charging electricity: **{kwh_year:,.1f} kWh/year**")
         charge_eff = st.slider("Charging system efficiency (%):", 70, 100, 90)
 
-    col_grid1, col_grid2 = st.columns(2)
-    with col_grid1:
+    g1, g2 = st.columns(2)
+    with g1:
         ef_grid = st.number_input("Grid EF (kg CO₂e/kWh):", min_value=0.0, value=0.9, step=0.0001)
-    with col_grid2:
+    with g2:
         renewable_fraction = st.slider("Renewable supply fraction (% of total electricity):", 0, 100, 0, step=5)
 
     project_uncert_pct = st.slider("Project emission uncertainty (%):", 0.0, 20.0, 5.0, step=0.5)
 
-    # Effective EF with renewables
     eff_grid_ef = ef_grid * (1 - renewable_fraction / 100.0) + RENEWABLE_EF * (renewable_fraction / 100.0)
-
-    # Adjust for charging losses – convert from kWh drawn to "useful" kWh
     useful_kwh = kwh_year * (charge_eff / 100.0)
 
     PEy_kg = useful_kwh * eff_grid_ef
@@ -176,15 +322,15 @@ def vm0038_ev():
 
     st.divider()
 
-    # -------------------------------------------------
-    # 4. Project duration, grid decarbonisation & annual series
-    # -------------------------------------------------
+    # ---------------------------
+    # 4) Duration + grid decarb + annual series
+    # ---------------------------
     st.subheader("3. Project Duration, Grid Decarbonisation & Annual Emissions")
 
-    col_dur1, col_dur2 = st.columns(2)
-    with col_dur1:
+    d1, d2 = st.columns(2)
+    with d1:
         years = st.number_input("Project duration (years):", min_value=1, value=10, step=1)
-    with col_dur2:
+    with d2:
         grid_decarb = st.slider("Annual grid EF reduction (%/year):", 0.0, 10.0, 2.0, step=0.5)
 
     if BEy_kg <= 0 or kwh_year <= 0:
@@ -194,17 +340,15 @@ def vm0038_ev():
     records = []
     current_ef = eff_grid_ef
 
-    # Combine baseline & project uncertainties (approximate root-sum-square)
     u_b = baseline_uncert_pct / 100.0
     u_p = project_uncert_pct / 100.0
     combined_u = (u_b**2 + u_p**2) ** 0.5
 
     for y in range(1, int(years) + 1):
         year_PEy_kg = useful_kwh * current_ef
-        year_BEy_kg = BEy_kg  # baseline assumed constant unless updated by user
+        year_BEy_kg = BEy_kg
         year_ER_kg = year_BEy_kg - year_PEy_kg
 
-        # Uncertainty estimates
         bey_unc_kg = year_BEy_kg * u_b
         pey_unc_kg = year_PEy_kg * u_p
         ery_unc_kg = abs(year_ER_kg) * combined_u
@@ -225,31 +369,32 @@ def vm0038_ev():
             }
         )
 
-        # Grid decarbonisation for next year
         current_ef *= (1 - grid_decarb / 100.0)
 
     df = pd.DataFrame(records)
 
-    total_reduction_kg = df["Net Reduction (kg)"].sum()
+    total_reduction_kg = float(df["Net Reduction (kg)"].sum())
     total_reduction_t = total_reduction_kg / 1000.0
 
-    total_reduction_unc_kg = (df["Net Reduction ± (kg)"] ** 2).sum() ** 0.5
+    total_reduction_unc_kg = float((df["Net Reduction ± (kg)"] ** 2).sum() ** 0.5)
     total_reduction_unc_t = total_reduction_unc_kg / 1000.0
 
     st.markdown("### Annual emission results")
-    st.dataframe(df[["Year", "BEy (t)", "PEy (t)", "Net Reduction (t)", "Net Reduction ± (t)"]],
-                 use_container_width=True)
+    st.dataframe(
+        df[["Year", "BEy (t)", "PEy (t)", "Net Reduction (t)", "Net Reduction ± (t)"]],
+        use_container_width=True,
+        hide_index=True
+    )
 
     st.success(
         f"**Total emission reductions over {int(years)} years:** "
         f"{total_reduction_t:,.3f} ± {total_reduction_unc_t:,.3f} t CO₂e"
     )
 
-    # -------------------------------------------------
-    # 5. Charts
-    # -------------------------------------------------
+    # ---------------------------
+    # 5) Charts
+    # ---------------------------
     st.markdown("### Emission trajectories")
-
     chart_data = df[["Year", "BEy (t)", "PEy (t)", "Net Reduction (t)"]].melt(
         id_vars="Year",
         var_name="Series",
@@ -266,74 +411,128 @@ def vm0038_ev():
             tooltip=["Year", "Series", "tCO2e"],
         )
     )
-
     st.altair_chart(chart, use_container_width=True)
 
-    # -------------------------------------------------
-    # 6. Download CSV
-    # -------------------------------------------------
+    # ---------------------------
+    # 6) Download CSV
+    # ---------------------------
     st.markdown("### Download annual results")
-
     csv_bytes = df.to_csv(index=False).encode("utf-8")
     st.download_button(
         label="💾 Download VM0038 annual results (CSV)",
         data=csv_bytes,
         file_name="vm0038_ev_annual_results.csv",
         mime="text/csv",
+        use_container_width=True
     )
 
     st.divider()
 
-    # -------------------------------------------------
-    # 7. Save to Carbon Registry
-    # -------------------------------------------------
-    st.subheader("4. Save Total Reduction to Carbon Registry")
+    # ---------------------------
+    # 7) Save to Registry ledger (calc_runs)
+    # ---------------------------
+    st.subheader("4. Save to Carbon Registry ledger (recommended)")
 
     st.caption(
-        "This will create a single emission record with the **total lifetime reduction** in tonnes CO₂e. "
-        "You can also model per-year records manually using the CSV."
+        "This saves a methodology run into the registry ledger (`calc_runs`). "
+        "For demo: it proves the pipeline from methodology → record → audit-ready JSON."
     )
 
-    if st.button("💾 Save total reduction as emission record"):
-        with SessionLocal() as session:
-            add_emission(
-                session,
-                project_id=project_id,
-                date=date.today(),
-                quantity_tCO2e=total_reduction_t,
-                activity_type="VM0038 – EV Charging (lifetime)",
-                notes=(
-                    f"VM0038-like EV charging methodology over {int(years)} years. "
-                    f"Total reduction {total_reduction_t:,.3f} ± {total_reduction_unc_t:,.3f} tCO₂e."
-                ),
-            )
-        st.success("Total reduction saved into the Carbon Registry.")
+    factor_source = st.text_area(
+        "Emission factor source / reference (required to save)",
+        placeholder="Cite your fuel EF + grid EF sources (dataset name, year, geography, link/doc).",
+        height=90,
+    )
+    status = st.selectbox("Record status", ["final", "draft"], index=0)
 
-    # -------------------------------------------------
-    # 8. Monitoring & QA/QC guidance
-    # -------------------------------------------------
+    can_save = bool(factor_source.strip())
+    if st.button("✅ Save methodology run", use_container_width=True, disabled=not can_save):
+        baseline_tco2e = BEy_kg / 1000.0
+        project_tco2e = (PEy_kg) / 1000.0  # year 1 project (for header fields)
+        reduction_tco2e = total_reduction_t
+
+        inputs = {
+            "methodology": "VM0038-style",
+            "project_id": project_id,
+            "period_start": period_start.strip() or None,
+            "period_end": period_end.strip() or None,
+            "baseline": {
+                "fuel_type": fuel_type,
+                "fuel_use_l_per_year": fuel_use_l,
+                "ef_fuel_kg_per_l": ef_fuel,
+                "include_wtt": include_wtt,
+                "wtt_ef_kg_per_l": wtt_ef,
+                "baseline_uncert_pct": baseline_uncert_pct,
+                "energy_mj_year": energy_mj_year,
+            },
+            "project": {
+                "mode": mode,
+                "kwh_year": kwh_year,
+                "charge_eff_pct": charge_eff,
+                "ef_grid_kg_per_kwh": ef_grid,
+                "renewable_fraction_pct": renewable_fraction,
+                "effective_grid_ef_kg_per_kwh": eff_grid_ef,
+                "useful_kwh": useful_kwh,
+                "project_uncert_pct": project_uncert_pct,
+            },
+            "duration": {
+                "years": int(years),
+                "grid_decarb_pct_per_year": grid_decarb,
+            }
+        }
+
+        outputs = {
+            "year1": {
+                "BEy_kg": BEy_kg,
+                "PEy_kg": PEy_kg,
+                "ERy_kg": (BEy_kg - PEy_kg),
+            },
+            "totals": {
+                "total_reduction_t": total_reduction_t,
+                "total_reduction_unc_t": total_reduction_unc_t,
+            },
+            "annual_table": df.to_dict(orient="records"),
+        }
+
+        calc_id = save_methodology_run(
+            project_id=project_id,
+            calc_name="VM0038-style — EV Charging",
+            period_start=period_start.strip() or None,
+            period_end=period_end.strip() or None,
+            baseline_tco2e=baseline_tco2e,
+            project_tco2e=project_tco2e,
+            reduction_tco2e=reduction_tco2e,
+            inputs=inputs,
+            outputs=outputs,
+            factor_source=factor_source,
+            status=status
+        )
+        st.success(f"Saved ✅  calc_id = {calc_id}")
+
+    # ---------------------------
+    # 8) Monitoring & QA/QC guidance
+    # ---------------------------
     with st.expander("🔍 Monitoring, data & QA/QC hints"):
         st.markdown(
             """
-            **Suggested monitoring parameters:**
-            - Baseline fuel:
-              - Fuel purchase records (litres)
-              - Vehicle kilometres travelled (if applicable)
-              - Fuel type breakdown (petrol/diesel)
-            - Project electricity:
-              - Metered kWh per charger / per site
-              - Charging sessions and duration
-              - EV fleet size and utilisation
+**Suggested monitoring parameters**
+- Baseline fuel:
+  - Fuel purchase records (litres)
+  - Vehicle kilometres travelled (if applicable)
+  - Fuel type breakdown (petrol/diesel)
+- Project electricity:
+  - Metered kWh per charger / per site
+  - Charging sessions and duration
+  - EV fleet size and utilisation
 
-            **QA/QC suggestions:**
-            - Cross-check fuel data with invoices and logbooks
-            - Check meter calibration certificates for chargers
-            - Reconcile station-level kWh with utility bills
-            - Document all emission factors with source (e.g. IPCC, national inventory, utility EF)
+**QA/QC suggestions**
+- Cross-check fuel with invoices and logbooks
+- Check charger meter calibration where applicable
+- Reconcile station kWh with utility bills
+- Document all emission factors with source + vintage + geography
 
-            **Uncertainty:**
-            - The uncertainty sliders approximate combined uncertainty using root-sum-square of baseline and project.
-            - For formal crediting, a dedicated uncertainty analysis following Verra/VM0038 guidance is recommended.
+**Uncertainty**
+- Slider uncertainty uses a simple root-sum-square approximation.
+- Verification-grade uncertainty analysis must follow the chosen standard/methodology.
             """
         )
-
