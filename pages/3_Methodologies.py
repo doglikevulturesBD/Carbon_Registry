@@ -1,25 +1,257 @@
-# pages/3_Methodologies.py
+# pages/3_📘_Methodologies.py
 # ------------------------------------------------------------
 # Carbon Registry • Methodology Calculators (Single-file, launch-ready)
+#
+# Embedded CSS version:
+# - No dependency on assets/style.css
+# - Ensures consistent styling even if file paths / load_css / caching causes issues
+#
+# Contains 3 MVP demos:
+# - VM0038 (EV charging)  [demo-style, not official EF values]
+# - AM0124 (Hydrogen electrolysis) [demo-style applicability + ER]
+# - VMR0007 (Solid waste recovery & recycling) [demo-style ER]
 # ------------------------------------------------------------
 
 import streamlit as st
 
-# MUST be the first Streamlit calls on the page
-from utils.load_css import load_css
+# ------------------------------------------------------------
+# PAGE CONFIG (must be first Streamlit call)
+# ------------------------------------------------------------
 st.set_page_config(page_title="Carbon Registry • Methodologies", page_icon="📘", layout="wide")
-load_css()
 
-# --- hard fallback: if CSS didn’t load due to path issues, try reading directly ---
-# (does not change functionality; it just ensures styling always applies)
-try:
-    from pathlib import Path
-    css_path = Path("assets/style.css")
-    if css_path.exists():
-        st.markdown(f"<style>{css_path.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
-except Exception:
-    pass
 
+# ------------------------------------------------------------
+# EMBEDDED CSS (full)
+# ------------------------------------------------------------
+EMBEDDED_CSS = r"""
+/* ============================================================
+   GLOBAL VARIABLES
+============================================================ */
+:root {
+    --bg-dark: #020c08;
+    --bg-card: rgba(10, 25, 15, 0.55);
+    --bg-card-strong: rgba(10, 25, 15, 0.85);
+
+    --green-neon: #39ff9f;
+    --green-mid: #00b46f;
+    --green-soft: #86ffcf;
+
+    --text-light: #e8fff2;
+    --text-mid: #b3ffdd;
+
+    --border-glow: 0 0 12px rgba(57, 255, 159, 0.45);
+    --shadow-card: 0 0 20px rgba(0, 255, 138, 0.15);
+
+    --radius: 18px;
+    --transition: 0.25s ease-in-out;
+}
+
+/* ============================================================
+   RESET / BASE
+============================================================ */
+html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: var(--bg-dark) !important;
+    font-family: "Segoe UI", Roboto, sans-serif;
+    color: var(--text-light);
+}
+
+h1, h2, h3, h4 {
+    color: var(--green-soft) !important;
+    letter-spacing: 0.6px;
+    text-shadow: 0 0 8px rgba(57, 255, 159, 0.25);
+}
+
+p, label, span, div {
+    color: var(--text-mid) !important;
+}
+
+/* ============================================================
+   STREAMLIT OVERRIDES
+============================================================ */
+.stApp {
+    background: var(--bg-dark) !important;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+    background: rgba(5, 20, 10, 0.9) !important;
+    backdrop-filter: blur(12px);
+    border-right: 1px solid rgba(57, 255, 159, 0.15);
+    box-shadow: 4px 0 20px rgba(0, 255, 138, 0.08);
+}
+
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 {
+    color: var(--green-soft) !important;
+}
+
+/* Sidebar buttons */
+.stButton>button {
+    background: var(--green-mid) !important;
+    color: black !important;
+    font-weight: 600;
+    border-radius: var(--radius);
+    border: none;
+    box-shadow: var(--border-glow);
+    transition: var(--transition);
+}
+
+.stButton>button:hover {
+    background: var(--green-neon) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 0 18px rgba(57, 255, 159, 0.8);
+}
+
+/* ============================================================
+   CARDS / CONTAINERS
+============================================================ */
+.im-card, .stContainer, .stMarkdown {
+    background: var(--bg-card) !important;
+    padding: 18px 22px !important;
+    border-radius: var(--radius);
+    border: 1px solid rgba(57, 255, 159, 0.2);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(40px) saturate(120%);
+}
+
+/* General input styling */
+input, textarea, select {
+    background: rgba(5, 20, 10, 0.5) !important;
+    border: 1px solid rgba(57, 255, 159, 0.25) !important;
+    border-radius: var(--radius) !important;
+    color: var(--text-light) !important;
+}
+
+input:focus, textarea:focus, select:focus {
+    border-color: var(--green-neon) !important;
+    box-shadow: var(--border-glow);
+}
+
+/* Metric outputs */
+.stSuccess, .stAlert {
+    border-left: 4px solid var(--green-neon) !important;
+    background: rgba(0, 255, 138, 0.08) !important;
+    color: var(--green-soft) !important;
+}
+
+/* ============================================================
+   GLOW SEPARATORS
+============================================================ */
+hr {
+    border: none;
+    height: 1px;
+    background: linear-gradient(
+        90deg,
+        rgba(57, 255, 159, 0) 0%,
+        rgba(57, 255, 159, 0.6) 50%,
+        rgba(57, 255, 159, 0) 100%
+    );
+    margin: 25px 0;
+}
+
+/* ============================================================
+   CUSTOM UTILITY CLASSES
+============================================================ */
+.green-glow {
+    text-shadow: 0 0 12px var(--green-neon);
+    color: var(--green-neon) !important;
+    font-weight: 700;
+}
+
+.card {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 20px;
+    border: 1px solid rgba(57, 255, 159, 0.25);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(14px);
+}
+
+.glass-box {
+    border-radius: var(--radius);
+    background: rgba(10, 25, 15, 0.45);
+    border: 1px solid rgba(57, 255, 159, 0.25);
+    padding: 25px;
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(30px);
+}
+
+/* ============================================================
+   EXPANDERS
+============================================================ */
+.streamlit-expanderHeader {
+    background: rgba(10, 30, 15, 0.6) !important;
+    color: var(--green-soft) !important;
+    border-radius: var(--radius) !important;
+}
+
+/* ============================================================
+   TABLES
+============================================================ */
+tbody, thead, tr, th, td {
+    color: var(--text-light) !important;
+    background: rgba(10, 30, 15, 0.25) !important;
+    border-color: rgba(57, 255, 159, 0.2) !important;
+}
+
+/* ============================================================
+   SUCCESS, WARNING, INFO TEXT
+============================================================ */
+.stSuccess, .stWarning, .stInfo, .stError {
+    padding: 12px 18px !important;
+    border-radius: var(--radius) !important;
+    border-left: 4px solid var(--green-neon) !important;
+}
+
+/* ============================================================
+   BUTTONS (global)
+============================================================ */
+button[kind="primary"], .stDownloadButton button {
+    background: var(--green-mid) !important;
+    color: black !important;
+    border-radius: var(--radius) !important;
+    border: none !important;
+    box-shadow: var(--border-glow) !important;
+    transition: var(--transition);
+    font-weight: 600 !important;
+}
+
+button[kind="primary"]:hover,
+.stDownloadButton button:hover {
+    background: var(--green-neon) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 0 20px rgba(57, 255, 159, 0.7) !important;
+}
+
+/* ============================================================
+   FOOTER HIDE
+============================================================ */
+footer { visibility: hidden !important; }
+
+/* ============================================================
+   ALTAIR / VEGA EMBED BACKGROUND (dark-friendly)
+============================================================ */
+.vega-embed, .vega-embed details, .vega-embed summary {
+    background: rgba(10, 25, 15, 0.35) !important;
+    border: 1px solid rgba(57, 255, 159, 0.20) !important;
+    box-shadow: 0 0 20px rgba(0, 255, 138, 0.12) !important;
+    border-radius: 18px !important;
+    padding: 10px !important;
+}
+
+/* ============================================================
+   END OF FILE
+============================================================ */
+"""
+st.markdown(f"<style>{EMBEDDED_CSS}</style>", unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------
+# Imports (after CSS)
+# ------------------------------------------------------------
 import sqlite3
 import json
 import uuid
@@ -33,48 +265,25 @@ import altair as alt
 
 
 # ------------------------------------------------------------
-# Altair theme (prevents white charts on dark UI)
-# ------------------------------------------------------------
-try:
-    alt.themes.enable("dark")
-except Exception:
-    # If "dark" theme isn't available, set minimal config
-    pass
-
-# Also set consistent chart background (Altair sometimes ignores CSS)
-alt.data_transformers.disable_max_rows()
-st.markdown(
-    """
-    <style>
-      /* Make Altair/Vega charts sit nicely on dark background */
-      .vega-embed, .vega-embed details, .vega-embed summary {
-        background: rgba(10, 25, 15, 0.35) !important;
-        border-radius: 18px !important;
-      }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-# ------------------------------------------------------------
-# HERO (matches your other pages)
+# HERO (same vibe as your other pages)
 # ------------------------------------------------------------
 st.markdown(
     """
 <div class="glass-box" style="padding: 26px 26px 14px 26px; margin-bottom: 14px;">
 <h1 style="margin:0; color:#86ffcf; text-shadow:0 0 10px #39ff9f;">
-📘 Methodology Calculators
+Methodology Calculators
 </h1>
 <p style="font-size:18px; margin-top:10px; color:#b3ffdd;">
-Single-file, launch-ready demo calculators. No external methodology module imports.
+Worked examples (demo style) with saving into the emissions ledger.
 </p>
 <p style="font-size:14px; margin-top:10px; color:#b3ffdd; opacity:0.85;">
-These are <b>demo-style reference implementations</b>: structure + data flow + saving to ledger — not official crediting.
+These prove structure + data flow + audit-ready saving — not official crediting outputs.
 </p>
 </div>
     """,
     unsafe_allow_html=True,
 )
+
 
 # ------------------------------------------------------------
 # DB (SQLite) — Cloud-safe
@@ -103,6 +312,7 @@ def now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 def ensure_schema() -> None:
+    # projects table should already exist from Registry page, but we guard anyway
     db_exec("""
     CREATE TABLE IF NOT EXISTS projects (
         project_id TEXT PRIMARY KEY,
@@ -113,6 +323,7 @@ def ensure_schema() -> None:
     );
     """)
 
+    # A simple emissions ledger for methodology saves
     db_exec("""
     CREATE TABLE IF NOT EXISTS emissions (
         emission_id TEXT PRIMARY KEY,
@@ -312,7 +523,7 @@ Outputs are **screening/demo** unless you align inputs, boundaries, and factors 
     project_uncert_pct = st.slider("Project uncertainty (%)", 0.0, 20.0, 5.0, 0.5, key="vm0038_u_proj")
 
     eff_grid_ef = ef_grid * (1 - renewable_fraction / 100.0) + RENEWABLE_EF * (renewable_fraction / 100.0)
-    useful_kwh = kwh_year * (charge_eff / 100.0)
+    useful_kwh = kwh_year * (charge_eff / 100.0)   # unchanged
     PEy_kg = useful_kwh * eff_grid_ef
     st.write(f"**PEy (year 1):** {PEy_kg:,.2f} kg CO₂e/year")
 
@@ -339,6 +550,8 @@ Outputs are **screening/demo** unless you align inputs, boundaries, and factors 
         year_BEy_kg = float(BEy_kg)
         year_ER_kg = year_BEy_kg - year_PEy_kg
 
+        bey_unc_kg = year_BEy_kg * u_b
+        pey_unc_kg = year_PEy_kg * u_p
         ery_unc_kg = abs(year_ER_kg) * combined_u
 
         records.append({
@@ -434,6 +647,7 @@ This is a **demonstration** and not a substitute for official methodology implem
         gwp_h2 = st.number_input("GWP of H₂ (t CO₂e / t H₂)", min_value=0.0, value=5.8, key="am0124_gwp")
         years = st.number_input("Project duration (years)", min_value=1, value=10, key="am0124_years")
 
+    # Baseline EF (your MVP logic preserved)
     EF_BL = 19.0 if "Coal" in baseline else 9.0
 
     ratio = (grid_mwh / captive_mwh) if captive_mwh > 0 else np.inf
@@ -597,7 +811,7 @@ All factors shown here are **placeholders** for demonstration only.
 
     render_save_panel(
         methodology="VMR0007 (demo) – Solid Waste Recovery & Recycling",
-        total_tco2e=float(er),
+        total_tco2e=float(er),  # annual ER in this MVP
         inputs=inputs,
         outputs=outputs,
         notes_default="VMR0007-style demo. Annual ER saved (not lifetime unless you multiply by years externally).",
@@ -605,7 +819,7 @@ All factors shown here are **placeholders** for demonstration only.
 
 
 # ------------------------------------------------------------
-# PAGE MAIN SELECTOR (unchanged)
+# PAGE MAIN
 # ------------------------------------------------------------
 choice = st.selectbox(
     "Select methodology:",
