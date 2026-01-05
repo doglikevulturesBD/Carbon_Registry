@@ -12,11 +12,13 @@ from utils.load_css import load_css
 # ------------------------------------------------------------
 # PAGE CONFIG
 # ------------------------------------------------------------
-st.set_page_config(page_title="Carbon Registry", page_icon="⚖️", layout="wide")
-load_css()
+from utils.ui import setup_page, render_hero
+setup_page(page_title="Carbon Registry • Registry")
+render_hero(
+    title="⚖️ Carbon Registry",
+    subtitle="Create projects, log activities, and capture boundaries + assumptions.",
+)
 
-st.title("⚖️ Carbon Registry")
-st.caption("Foundation registry for boundaries, assumptions, activity logs, and transparent calculator demos (beta).")
 
 # ------------------------------------------------------------
 # SETTINGS
