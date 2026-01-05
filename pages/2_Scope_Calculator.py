@@ -30,11 +30,14 @@ from utils.load_css import load_css
 # PAGE CONFIG
 # ------------------------------------------------------------
 from utils.ui import setup_page, render_hero
-setup_page(page_title="Carbon Registry • Registry")
+
+setup_page(page_title="Carbon Registry • Scopes", page_icon="📊", layout="wide")
+
 render_hero(
-    title="⚖️ Carbon Registry",
-    subtitle="Create projects, log activities, and capture boundaries + assumptions.",
+    title="📊 Scope 1 / 2 / 3 Calculator",
+    subtitle_html="Baseline estimates across scopes with transparent factors + assumptions.",
 )
+
 
 
 # ------------------------------------------------------------
