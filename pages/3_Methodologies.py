@@ -25,6 +25,13 @@ import pandas as pd
 import numpy as np
 import altair as alt
 
+# ✅ ADDED: use the same shared CSS loader as your other pages
+from utils.load_css import load_css
+
+# ✅ ADDED: set page config + load CSS (matches other pages)
+st.set_page_config(page_title="📘 Methodologies", page_icon="📘", layout="wide")
+load_css()
+
 
 # ------------------------------------------------------------
 # DB (SQLite) — Cloud-safe
@@ -141,9 +148,13 @@ def render_save_panel(
 ):
     st.divider()
     with st.expander("💾 Save result to Carbon Registry (optional)", expanded=False):
+        # ✅ ADDED: wrap save UI in the same styled container used elsewhere
+        st.markdown("<div class='glass-box'>", unsafe_allow_html=True)
+
         projs = list_projects()
         if projs.empty:
             st.error("No projects found. Create a project on the Registry page first.")
+            st.markdown("</div>", unsafe_allow_html=True)
             return
 
         active_pid = st.session_state.get("active_project_id")
@@ -182,6 +193,8 @@ def render_save_panel(
                 outputs=outputs,
             )
             st.success(f"Saved ✅ emission_id = {eid}")
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ============================================================
@@ -562,9 +575,21 @@ All factors shown here are **placeholders** for demonstration only.
 # ------------------------------------------------------------
 # PAGE MAIN
 # ------------------------------------------------------------
-st.title("📘 Methodology Calculators")
-st.caption("Single-file, launch-ready demo calculators. No external methodology module imports.")
 
+# ✅ ADDED: header block styled like your other pages (visual only; no logic change)
+st.markdown("""
+<div style='padding: 20px 10px 10px 10px;'>
+<h1 style='color:#86ffcf; text-shadow:0 0 10px #39ff9f; margin-bottom: 4px;'>
+📘 Methodology Calculators
+</h1>
+<p style='font-size:16px; color:#b3ffdd; margin-top: 0;'>
+Single-file, launch-ready demo calculators. No external methodology module imports.
+</p>
+</div>
+""", unsafe_allow_html=True)
+
+# ✅ ADDED: wrap selector in your standard "glass-box" container (visual only)
+st.markdown("<div class='glass-box'>", unsafe_allow_html=True)
 choice = st.selectbox(
     "Select methodology:",
     [
@@ -573,18 +598,23 @@ choice = st.selectbox(
         "VMR0007 (demo) – Solid Waste Recovery & Recycling",
     ],
 )
+st.markdown("</div>", unsafe_allow_html=True)
 
 st.divider()
 
+# ✅ ADDED: wrap content in "glass-box" container (visual only)
+st.markdown("<div class='glass-box'>", unsafe_allow_html=True)
 if choice.startswith("VM0038"):
     vm0038_ev()
 elif choice.startswith("AM0124"):
     am0124_hydrogen_app()
 else:
     vmr0007_app()
+st.markdown("</div>", unsafe_allow_html=True)
 
 st.divider()
 st.caption(
     "Launch note: These are demo-style reference implementations. "
     "They prove structure + data flow + audit-ready saving, not official crediting."
 )
+
