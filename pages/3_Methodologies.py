@@ -3,9 +3,9 @@
 # Carbon Registry • Methodology Calculators (Single-file, launch-ready)
 #
 # Fixes "Module could not be loaded" by:
-# - Removing imports like: from methodologies.vm0038_ev import vm0038_ev
+# - Removing external methodology imports
 # - Removing dependency on registry.database / SessionLocal / registry.crud
-# - Using the same SQLite DB (data/carbon_registry.db) used by your registry/scope pages
+# - Using the same SQLite DB (data/carbon_registry.db)
 #
 # Contains 3 MVP demos:
 # - VM0038 (EV charging)  [demo-style, not official EF values]
@@ -19,18 +19,23 @@ import json
 import uuid
 from pathlib import Path
 from datetime import datetime, date
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Dict, Any
 
 import pandas as pd
 import numpy as np
 import altair as alt
 
-# ✅ ADDED: use the same shared CSS loader as your other pages
 from utils.load_css import load_css
 
-# ✅ ADDED: set page config + load CSS (matches other pages)
-st.set_page_config(page_title="📘 Methodologies", page_icon="📘", layout="wide")
+
+# ------------------------------------------------------------
+# PAGE CONFIG (match Page 1 pattern)
+# ------------------------------------------------------------
+st.set_page_config(page_title="Carbon Registry • Methodologies", page_icon="📘", layout="wide")
 load_css()
+
+st.title("📘 Methodology Calculators")
+st.caption("Demo-style reference implementations. Structure + data flow + audit-ready saving (not official crediting).")
 
 
 # ------------------------------------------------------------
@@ -148,13 +153,9 @@ def render_save_panel(
 ):
     st.divider()
     with st.expander("💾 Save result to Carbon Registry (optional)", expanded=False):
-        # ✅ ADDED: wrap save UI in the same styled container used elsewhere
-        st.markdown("<div class='glass-box'>", unsafe_allow_html=True)
-
         projs = list_projects()
         if projs.empty:
             st.error("No projects found. Create a project on the Registry page first.")
-            st.markdown("</div>", unsafe_allow_html=True)
             return
 
         active_pid = st.session_state.get("active_project_id")
@@ -193,8 +194,6 @@ def render_save_panel(
                 outputs=outputs,
             )
             st.success(f"Saved ✅ emission_id = {eid}")
-
-        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ============================================================
@@ -401,7 +400,6 @@ This is a **demonstration** and not a substitute for official methodology implem
         gwp_h2 = st.number_input("GWP of H₂ (t CO₂e / t H₂)", min_value=0.0, value=5.8, key="am0124_gwp")
         years = st.number_input("Project duration (years)", min_value=1, value=10, key="am0124_years")
 
-    # Baseline EF (your MVP logic preserved)
     EF_BL = 19.0 if "Coal" in baseline else 9.0
 
     ratio = (grid_mwh / captive_mwh) if captive_mwh > 0 else np.inf
@@ -575,21 +573,6 @@ All factors shown here are **placeholders** for demonstration only.
 # ------------------------------------------------------------
 # PAGE MAIN
 # ------------------------------------------------------------
-
-# ✅ ADDED: header block styled like your other pages (visual only; no logic change)
-st.markdown("""
-<div style='padding: 20px 10px 10px 10px;'>
-<h1 style='color:#86ffcf; text-shadow:0 0 10px #39ff9f; margin-bottom: 4px;'>
-📘 Methodology Calculators
-</h1>
-<p style='font-size:16px; color:#b3ffdd; margin-top: 0;'>
-Single-file, launch-ready demo calculators. No external methodology module imports.
-</p>
-</div>
-""", unsafe_allow_html=True)
-
-# ✅ ADDED: wrap selector in your standard "glass-box" container (visual only)
-st.markdown("<div class='glass-box'>", unsafe_allow_html=True)
 choice = st.selectbox(
     "Select methodology:",
     [
@@ -598,19 +581,15 @@ choice = st.selectbox(
         "VMR0007 (demo) – Solid Waste Recovery & Recycling",
     ],
 )
-st.markdown("</div>", unsafe_allow_html=True)
 
 st.divider()
 
-# ✅ ADDED: wrap content in "glass-box" container (visual only)
-st.markdown("<div class='glass-box'>", unsafe_allow_html=True)
 if choice.startswith("VM0038"):
     vm0038_ev()
 elif choice.startswith("AM0124"):
     am0124_hydrogen_app()
 else:
     vmr0007_app()
-st.markdown("</div>", unsafe_allow_html=True)
 
 st.divider()
 st.caption(
