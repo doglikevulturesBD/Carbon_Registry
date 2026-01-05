@@ -1,19 +1,25 @@
-# pages/3_📘_Methodologies.py
+# pages/3_Methodologies.py
 # ------------------------------------------------------------
 # Carbon Registry • Methodology Calculators (Single-file, launch-ready)
-#
-# Fixes "Module could not be loaded" by:
-# - Removing external methodology imports
-# - Removing dependency on registry.database / SessionLocal / registry.crud
-# - Using the same SQLite DB (data/carbon_registry.db)
-#
-# Contains 3 MVP demos:
-# - VM0038 (EV charging)  [demo-style, not official EF values]
-# - AM0124 (Hydrogen electrolysis) [demo-style applicability + ER]
-# - VMR0007 (Solid waste recovery & recycling) [demo-style ER]
 # ------------------------------------------------------------
 
 import streamlit as st
+
+# MUST be the first Streamlit calls on the page
+from utils.load_css import load_css
+st.set_page_config(page_title="Carbon Registry • Methodologies", page_icon="📘", layout="wide")
+load_css()
+
+# --- hard fallback: if CSS didn’t load due to path issues, try reading directly ---
+# (does not change functionality; it just ensures styling always applies)
+try:
+    from pathlib import Path
+    css_path = Path("assets/style.css")
+    if css_path.exists():
+        st.markdown(f"<style>{css_path.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
+except Exception:
+    pass
+
 import sqlite3
 import json
 import uuid
@@ -25,22 +31,50 @@ import pandas as pd
 import numpy as np
 import altair as alt
 
-from utils.load_css import load_css
-
 
 # ------------------------------------------------------------
-# PAGE CONFIG (match Page 1 pattern)
+# Altair theme (prevents white charts on dark UI)
 # ------------------------------------------------------------
-from utils.ui import setup_page, render_hero
+try:
+    alt.themes.enable("dark")
+except Exception:
+    # If "dark" theme isn't available, set minimal config
+    pass
 
-setup_page(page_title="Carbon Registry • Methodologies", page_icon="📘", layout="wide")
-
-render_hero(
-    title="📘 Methodology Calculators",
-    subtitle_html="Verra-aligned worked examples (demos) with saving into your emissions ledger.",
+# Also set consistent chart background (Altair sometimes ignores CSS)
+alt.data_transformers.disable_max_rows()
+st.markdown(
+    """
+    <style>
+      /* Make Altair/Vega charts sit nicely on dark background */
+      .vega-embed, .vega-embed details, .vega-embed summary {
+        background: rgba(10, 25, 15, 0.35) !important;
+        border-radius: 18px !important;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
-
+# ------------------------------------------------------------
+# HERO (matches your other pages)
+# ------------------------------------------------------------
+st.markdown(
+    """
+    <div class="glass-box" style="padding: 26px 26px 14px 26px; margin-bottom: 14px;">
+      <h1 style="margin:0; color:#86ffcf; text-shadow:0 0 10px #39ff9f;">
+        📘 Methodology Calculators
+      </h1>
+      <p style="font-size:18px; margin-top:10px; color:#b3ffdd;">
+        Single-file, launch-ready demo calculators. No external methodology module imports.
+      </p>
+      <p style="font-size:14px; margin-top:10px; color:#b3ffdd; opacity:0.85;">
+        These are <b>demo-style reference implementations</b>: structure + data flow + saving to ledger — not official crediting.
+      </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ------------------------------------------------------------
 # DB (SQLite) — Cloud-safe
@@ -69,7 +103,6 @@ def now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 def ensure_schema() -> None:
-    # projects table should already exist from Registry page, but we guard anyway
     db_exec("""
     CREATE TABLE IF NOT EXISTS projects (
         project_id TEXT PRIMARY KEY,
@@ -80,7 +113,6 @@ def ensure_schema() -> None:
     );
     """)
 
-    # A simple emissions ledger for methodology saves
     db_exec("""
     CREATE TABLE IF NOT EXISTS emissions (
         emission_id TEXT PRIMARY KEY,
@@ -280,7 +312,7 @@ Outputs are **screening/demo** unless you align inputs, boundaries, and factors 
     project_uncert_pct = st.slider("Project uncertainty (%)", 0.0, 20.0, 5.0, 0.5, key="vm0038_u_proj")
 
     eff_grid_ef = ef_grid * (1 - renewable_fraction / 100.0) + RENEWABLE_EF * (renewable_fraction / 100.0)
-    useful_kwh = kwh_year * (charge_eff / 100.0)   # keeping your prior logic unchanged
+    useful_kwh = kwh_year * (charge_eff / 100.0)
     PEy_kg = useful_kwh * eff_grid_ef
     st.write(f"**PEy (year 1):** {PEy_kg:,.2f} kg CO₂e/year")
 
@@ -307,8 +339,6 @@ Outputs are **screening/demo** unless you align inputs, boundaries, and factors 
         year_BEy_kg = float(BEy_kg)
         year_ER_kg = year_BEy_kg - year_PEy_kg
 
-        bey_unc_kg = year_BEy_kg * u_b
-        pey_unc_kg = year_PEy_kg * u_p
         ery_unc_kg = abs(year_ER_kg) * combined_u
 
         records.append({
@@ -567,7 +597,7 @@ All factors shown here are **placeholders** for demonstration only.
 
     render_save_panel(
         methodology="VMR0007 (demo) – Solid Waste Recovery & Recycling",
-        total_tco2e=float(er),  # annual ER in this MVP
+        total_tco2e=float(er),
         inputs=inputs,
         outputs=outputs,
         notes_default="VMR0007-style demo. Annual ER saved (not lifetime unless you multiply by years externally).",
@@ -575,7 +605,7 @@ All factors shown here are **placeholders** for demonstration only.
 
 
 # ------------------------------------------------------------
-# PAGE MAIN
+# PAGE MAIN SELECTOR (unchanged)
 # ------------------------------------------------------------
 choice = st.selectbox(
     "Select methodology:",
@@ -600,4 +630,3 @@ st.caption(
     "Launch note: These are demo-style reference implementations. "
     "They prove structure + data flow + audit-ready saving, not official crediting."
 )
-
