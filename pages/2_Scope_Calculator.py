@@ -29,11 +29,13 @@ from utils.load_css import load_css
 # ------------------------------------------------------------
 # PAGE CONFIG
 # ------------------------------------------------------------
-st.set_page_config(page_title="Scope 1/2/3 Calculator", page_icon="📊", layout="wide")
-load_css()
+from utils.ui import setup_page, render_hero
+setup_page(page_title="Carbon Registry • Registry")
+render_hero(
+    title="⚖️ Carbon Registry",
+    subtitle="Create projects, log activities, and capture boundaries + assumptions.",
+)
 
-st.title("📊 Scope 1 / 2 / 3 Calculator")
-st.caption("Guided calculations + EF/uncertainty discipline + optional save to MRV ledger.")
 
 # ------------------------------------------------------------
 # DB (SQLite) — Cloud-safe
