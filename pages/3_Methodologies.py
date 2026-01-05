@@ -32,10 +32,12 @@ from utils.load_css import load_css
 # PAGE CONFIG (match Page 1 pattern)
 # ------------------------------------------------------------
 from utils.ui import setup_page, render_hero
-setup_page(page_title="Carbon Registry • Registry")
+
+setup_page(page_title="Carbon Registry • Methodologies", page_icon="📘", layout="wide")
+
 render_hero(
-    title="⚖️ Carbon Registry",
-    subtitle="Create projects, log activities, and capture boundaries + assumptions.",
+    title="📘 Methodology Calculators",
+    subtitle_html="Verra-aligned worked examples (demos) with saving into your emissions ledger.",
 )
 
 
