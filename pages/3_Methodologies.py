@@ -61,17 +61,17 @@ st.markdown(
 # ------------------------------------------------------------
 st.markdown(
     """
-    <div class="glass-box" style="padding: 26px 26px 14px 26px; margin-bottom: 14px;">
-      <h1 style="margin:0; color:#86ffcf; text-shadow:0 0 10px #39ff9f;">
-        📘 Methodology Calculators
-      </h1>
-      <p style="font-size:18px; margin-top:10px; color:#b3ffdd;">
-        Single-file, launch-ready demo calculators. No external methodology module imports.
-      </p>
-      <p style="font-size:14px; margin-top:10px; color:#b3ffdd; opacity:0.85;">
-        These are <b>demo-style reference implementations</b>: structure + data flow + saving to ledger — not official crediting.
-      </p>
-    </div>
+<div class="glass-box" style="padding: 26px 26px 14px 26px; margin-bottom: 14px;">
+<h1 style="margin:0; color:#86ffcf; text-shadow:0 0 10px #39ff9f;">
+📘 Methodology Calculators
+</h1>
+<p style="font-size:18px; margin-top:10px; color:#b3ffdd;">
+Single-file, launch-ready demo calculators. No external methodology module imports.
+</p>
+<p style="font-size:14px; margin-top:10px; color:#b3ffdd; opacity:0.85;">
+These are <b>demo-style reference implementations</b>: structure + data flow + saving to ledger — not official crediting.
+</p>
+</div>
     """,
     unsafe_allow_html=True,
 )
